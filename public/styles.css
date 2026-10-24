@@ -344,3 +344,55 @@ table.t .sub { color: var(--text-3); font-size: 13px; }
   .game .topbar { grid-column: 1 / -1; }
   .me-life { font-size: clamp(90px, 30vh, 180px); }
 }
+
+/* ---------- commander art ----------
+   The art sits in a band across the top of a tile and fades into the player's colour,
+   so names get a picture but life totals always stay on solid colour. */
+
+.has-art { isolation: isolate; }
+.has-art::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: var(--art-h, 76px); z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,.5) 0%, rgba(0,0,0,.2) 45%, var(--fill) 100%),
+    var(--art) center 28% / cover no-repeat;
+}
+.has-art .opp-name, .has-art .opp-cmdr, .has-art .who, .sheet-head.has-art .t { text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+.has-art .opp-cmdr, .has-art .who span { color: rgba(255,255,255,.88); }
+/* the turn ring has to paint above the art */
+.opp.has-art.active { box-shadow: none; outline: 3px solid #fff; outline-offset: -3px; }
+.me.has-art.active { box-shadow: none; outline: 4px solid #fff; outline-offset: -4px; }
+.me.has-art { --art-h: 112px; }
+.opp.out, .me.out { --fill: var(--surface); }
+.out.has-art::before { filter: grayscale(1); opacity: .45; }
+.sheet-head.has-art { --art-h: 100%; }
+.sheet-head.has-art::before { background: linear-gradient(90deg, rgba(0,0,0,.55), rgba(0,0,0,.15) 70%, rgba(0,0,0,.35)), var(--art) center 28% / cover no-repeat; }
+
+.seat { position: relative; }
+.seat.has-art::before {
+  left: 30%; height: auto; bottom: 0; border-radius: 0 14px 14px 0;
+  background: linear-gradient(90deg, var(--surface), rgba(23,25,30,.55) 60%, rgba(23,25,30,.35)), var(--art) center 28% / cover no-repeat;
+}
+
+.thumb { width: 44px; height: 32px; border-radius: 6px; flex: none; background: var(--surface-3) var(--art) center 28% / cover no-repeat; }
+.card-img { display: block; max-width: 260px; margin: 0 auto; }
+.card-img img { display: block; width: 100%; border-radius: 4.75% / 3.5%; }
+
+/* commander picker */
+.cmdr-input { position: relative; }
+.cmdr-input .thumb { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); display: none; }
+.cmdr-input.picked .thumb { display: block; }
+.cmdr-input.picked .input { padding-left: 62px; }
+.cmdr-input .input { width: 100%; }
+.cmdr-results { display: flex; flex-direction: column; gap: 4px; }
+.cmdr-results:empty { display: none; }
+.cmdr-opt { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 6px 10px 6px 6px; border-radius: 10px; background: var(--surface-2); text-align: left; width: 100%; }
+.cmdr-opt:active { background: var(--surface-3); }
+.cmdr-opt .thumb { width: 60px; height: 44px; }
+.cmdr-opt .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cmdr-opt b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdr-opt small { font-size: 13px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdr-note { padding: 10px 4px; font-size: 15px; color: var(--text-3); }
+.pips { display: flex; gap: 3px; flex: none; }
+.pip { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
+.pip.W { background: #f4ecd2; } .pip.U { background: #3d85c6; } .pip.B { background: #3b3236; }
+.pip.R { background: #d8452c; } .pip.G { background: #2f8a4e; } .pip.C { background: #b5b2ad; }

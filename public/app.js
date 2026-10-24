@@ -100,6 +100,12 @@ const isOut = (p) => !!p.eliminatedAt;
 const maxCmdr = (p) => Math.max(0, ...Object.values(p.cmdr || {}));
 const lethal = (p) => !isOut(p) && (p.life <= 0 || p.poison >= LETHAL_POISON || maxCmdr(p) >= LETHAL_CMDR);
 
+// Commander art. The server only accepts Scryfall image URLs; re-check here because they go into CSS url().
+const safeImg = (u) => (typeof u === 'string' && /^https:\/\/cards\.scryfall\.io\/[\w\-./?=&%]+$/.test(u) ? u : '');
+const artVar = (url) => (safeImg(url) ? `--art:url('${safeImg(url)}');` : '');
+const artOf = (p) => artVar(p?.card?.art);
+const parseCard = (c) => { if (typeof c !== 'string') return c || null; try { return JSON.parse(c); } catch { return null; } };
+
 // Opponents in table order, starting from the player on your left, going clockwise.
 function opponentsInOrder() {
   const list = seats();
@@ -284,9 +290,38 @@ function render() {
     else if (s.status === 'playing') html = viewGame();
     else if (s.status === 'ended') html = viewEnded();
   }
+  const typed = snapshotForms($app);
   $app.innerHTML = html;
+  restoreForms($app, typed);
   renderSheet();
   tick();
+}
+
+// A server update (someone else joining, say) re-renders the page; keep what this person was typing.
+function snapshotForms(root) {
+  const forms = {};
+  root.querySelectorAll('form[data-form]').forEach((f) => {
+    forms[f.dataset.form] = [...f.elements].filter((el) => el.name).map((el) => [el.name, el.value]);
+  });
+  const a = document.activeElement;
+  const focus = a?.form && root.contains(a) ? { form: a.form.dataset.form, name: a.name, at: a.selectionStart } : null;
+  return { forms, focus };
+}
+
+function restoreForms(root, { forms, focus }) {
+  for (const [name, fields] of Object.entries(forms)) {
+    const f = root.querySelector(`form[data-form="${name}"]`);
+    if (!f) continue;
+    for (const [k, v] of fields) {
+      const el = f.elements[k];
+      if (!el || el.length) continue;
+      if (k === 'color') { const sw = f.querySelector(`.swatch[data-color="${v}"]:not(.taken)`); if (sw) actions.pickColor(sw.dataset, sw); continue; }
+      el.value = v;
+    }
+    syncCmdrField(f);
+  }
+  const el = focus && root.querySelector(`form[data-form="${focus.form}"]`)?.elements[focus.name];
+  if (el?.focus) { el.focus(); try { el.setSelectionRange(focus.at, focus.at); } catch { /* not a text input */ } }
 }
 
 function renderSheet() {
@@ -300,12 +335,14 @@ function renderSheet() {
   if (!body) { store.sheet = null; $sheet.innerHTML = ''; return; }
   const enter = sh.fresh ? ' enter' : '';
   sh.fresh = false;
+  const typed = enter ? { forms: {}, focus: null } : snapshotForms($sheet);
   $sheet.innerHTML = `<div class="backdrop${enter}" data-act="closeSheet"></div><div class="sheet${enter}" role="dialog">${body}</div>`;
+  restoreForms($sheet, typed);
 }
 
 function openSheet(kind, id) { store.sheet = { kind, id, fresh: true }; renderSheet(); }
 
-const sheetHead = (title, sub = '', color = null) => `<div class="sheet-head ${color ? 'colored' : ''}" ${color ? `data-c="${color}"` : ''}>
+const sheetHead = (title, sub = '', color = null, art = null) => `<div class="sheet-head ${color ? 'colored' : ''} ${artVar(art) ? 'has-art' : ''}" ${color ? `data-c="${color}"` : ''} style="${artVar(art)}">
   <div class="t"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div>
   <button class="icon-btn" data-act="closeSheet" aria-label="Close">${icon.x}</button></div>`;
 
@@ -322,11 +359,19 @@ setInterval(tick, 1000);
 function profileFields(taken = []) {
   const p = ls.get('lc.profile', {});
   const color = p.color && !taken.includes(p.color) ? p.color : COLORS.find((c) => !taken.includes(c));
+  const card = parseCard(p.card);
+  const picked = card && card.name === p.commander ? card : null;
   return `
     <label class="field"><span class="cap">Your name</span>
       <input class="input" name="name" maxlength="20" autocomplete="nickname" required value="${esc(p.name || '')}" placeholder="Tommaso"></label>
-    <label class="field"><span class="cap">Commander (optional)</span>
-      <input class="input" name="commander" maxlength="40" value="${esc(p.commander || '')}" placeholder="Atraxa, Praetors' Voice"></label>
+    <div class="field">
+      <label class="cap" for="cmdr-${store.sheet ? 'sheet' : 'page'}">Commander (optional)</label>
+      <div class="cmdr-input ${picked ? 'picked' : ''}" style="${artVar(picked?.art)}"><span class="thumb"></span>
+        <input class="input" id="cmdr-${store.sheet ? 'sheet' : 'page'}" name="commander" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" data-cmdr
+          value="${esc(p.commander || '')}" placeholder="Search legal commanders"></div>
+      <input type="hidden" name="card" value="${esc(picked ? JSON.stringify(picked) : '')}">
+      <div class="cmdr-results" role="listbox"></div>
+    </div>
     <div class="field"><span class="cap">Colour</span>
       <div class="swatches">${COLORS.map((c) => `<button type="button" class="swatch ${c === color ? 'on' : ''} ${taken.includes(c) ? 'taken' : ''}" data-c="${c}" data-act="pickColor" data-color="${c}" aria-label="${c}">${c === color ? icon.check : ''}</button>`).join('')}</div>
       <input type="hidden" name="color" value="${color}"></div>`;
@@ -355,6 +400,8 @@ function viewHome() {
   </div>`;
 }
 
+const seatArt = (p) => (p.card?.art ? `class="seat has-art" style="${artOf(p)}"` : 'class="seat"');
+
 function seatRow(p, i, right = '') {
   const s = S();
   return `<div class="seat-n" data-c="${p.color}">${i + 1}</div>
@@ -368,7 +415,7 @@ function viewJoin() {
     return `<div class="page">
       <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Table ${esc(s.code)}</h1>
         <p>${s.players.length} player${s.players.length === 1 ? '' : 's'} · ${s.settings.startingLife} life</p></div></div>
-      <div class="seat-list">${seats().map((p, i) => `<div class="seat">${seatRow(p, i)}</div>`).join('')}</div>
+      <div class="seat-list">${seats().map((p, i) => `<div ${seatArt(p)}>${seatRow(p, i)}</div>`).join('')}</div>
       <form class="panel section" data-form="join">${profileFields(s.players.map((p) => p.color))}
         <button class="btn primary block big" type="submit">Take a seat</button></form>
     </div>`;
@@ -376,7 +423,7 @@ function viewJoin() {
   // Mid-game: claim an existing seat (e.g. phone died or switched device).
   return `<div class="page">
     <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Game in progress</h1><p>Tap your seat to rejoin</p></div></div>
-    <div class="seat-list">${seats().map((p, i) => `<button class="seat" data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${s.online.includes(p.id) ? 'Online' : 'Rejoin'}</span>`)}</button>`).join('')}</div>
+    <div class="seat-list">${seats().map((p, i) => `<button ${seatArt(p)} data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${s.online.includes(p.id) ? 'Online' : 'Rejoin'}</span>`)}</button>`).join('')}</div>
     <button class="btn ghost block" data-act="go" data-to="#/">Back to home</button>
   </div>`;
 }
@@ -409,7 +456,7 @@ function viewLobby() {
     </div>
     <div class="section">
       <div class="section-head"><div><h2 class="h2">Seats</h2><span class="muted small">Sit clockwise in this order</span></div><button class="btn sm" data-act="shuffle">${icon.dice} Shuffle</button></div>
-      <div class="seat-list">${list.map((p, i) => `<div class="seat">${seatRow(p, i, `
+      <div class="seat-list">${list.map((p, i) => `<div ${seatArt(p)}>${seatRow(p, i, `
           <div class="seat-tools">
             ${p.id === store.playerId ? `<button class="btn sm" data-act="sheet" data-kind="profile">Edit</button>` : p.id === s.hostId ? '<span class="tag" style="align-self:center;margin-right:6px">Host</span>' : ''}
             <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon.up}</button>
@@ -471,7 +518,7 @@ function viewGame() {
 
   const oppHtml = opps.map((p, i) => {
     const [r, c] = L.cells[i];
-    return `<div class="opp ${p.id === g.activeId ? 'active' : ''} ${isOut(p) ? 'out' : ''}" data-c="${p.color}" style="grid-row:${r};grid-column:${c}">
+    return `<div class="opp ${p.id === g.activeId ? 'active' : ''} ${isOut(p) ? 'out' : ''} ${p.card?.art ? 'has-art' : ''}" data-c="${p.color}" style="grid-row:${r};grid-column:${c};${artOf(p)}">
       ${p.id === g.activeId ? '<span class="turn-flag">Turn</span>' : ''}
       <button class="opp-head" data-act="sheet" data-kind="player" data-id="${p.id}">
         <span class="opp-name">${esc(p.name)}</span><span class="opp-cmdr">${esc(p.commander || ' ')}</span>
@@ -504,7 +551,7 @@ function viewGame() {
       <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button>
     </div>
     <div class="opps" style="--cols:${L.cols};--opp-size:${size}vw">${oppHtml}</div>
-    <div class="me ${myTurn ? 'active' : ''} ${isOut(self) ? 'out' : ''}" data-c="${self.color}">
+    <div class="me ${myTurn ? 'active' : ''} ${isOut(self) ? 'out' : ''} ${self.card?.art ? 'has-art' : ''}" data-c="${self.color}" style="${artOf(self)}">
       <div class="me-head">
         <button class="who" data-act="sheet" data-kind="player" data-id="${self.id}">
           <b>${esc(self.name)}</b><span>${esc(self.commander || 'Tap for all counters')}</span>
@@ -537,7 +584,7 @@ function sheetPlayer({ id }) {
   const others = seats().filter((q) => q.id !== p.id);
   const step = (field, d, src = '') => `<button class="step ${d < 0 ? 'neg' : 'pos'}" data-hold="1" data-target="${p.id}" data-field="${field}" data-delta="${d}" data-source="${src}">${minus(d)}</button>`;
   return `
-    ${sheetHead(`${esc(p.name)}${self ? ' (you)' : ''}`, esc(p.commander || `Seat ${p.seat + 1}`), p.color)}
+    ${sheetHead(`${esc(p.name)}${self ? ' (you)' : ''}`, esc(p.commander || `Seat ${p.seat + 1}`), p.color, p.card?.art)}
     <h4>Life</h4>
     <div class="life-edit">${step('life', -10)}${step('life', -5)}${step('life', -1)}
       <div class="v" style="${p.life <= 0 ? 'color:var(--danger)' : ''}">${p.life}</div>
@@ -554,7 +601,17 @@ function sheetPlayer({ id }) {
     </div>
     <div style="margin-top:8px">${isOut(p)
       ? `<button class="btn block" data-act="revive" data-id="${p.id}">Undo elimination</button>`
-      : `<button class="btn danger block" data-act="eliminate" data-id="${p.id}">${self ? 'I concede' : `Eliminate ${esc(p.name)}`}</button>`}</div>`;
+      : `<button class="btn danger block" data-act="eliminate" data-id="${p.id}">${self ? 'I concede' : `Eliminate ${esc(p.name)}`}</button>`}</div>
+    ${commanderCard(p, self)}`;
+}
+
+function commanderCard(p, self) {
+  const img = safeImg(p.card?.image);
+  if (!img && !self) return '';
+  return `<h4>Commander</h4>
+    ${img ? `<a class="card-img" href="${esc(p.card.uri || '#')}" target="_blank" rel="noopener"><img src="${img}" alt="${esc(p.card.name)}" loading="lazy"></a>
+      ${p.card.artist ? `<p class="muted small" style="text-align:center;margin:6px 0 0">Art by ${esc(p.card.artist)} · Scryfall</p>` : ''}` : ''}
+    ${self ? `<button class="btn block" style="margin-top:8px" data-act="sheet" data-kind="profile">${p.commander ? 'Change commander' : 'Choose commander'}</button>` : ''}`;
 }
 
 function sheetTable() {
@@ -662,7 +719,7 @@ function sheetEnd() {
 function sheetProfile() {
   const p = me();
   const taken = S().players.filter((q) => q.id !== p.id).map((q) => q.color);
-  ls.set('lc.profile', { ...ls.get('lc.profile', {}), name: p.name, commander: p.commander, color: p.color });
+  ls.set('lc.profile', { ...ls.get('lc.profile', {}), name: p.name, commander: p.commander, card: p.card ? JSON.stringify(p.card) : '', color: p.color });
   return `${sheetHead('Your seat')}
     <form class="section" data-form="profile">${profileFields(taken)}<button class="btn primary block big" type="submit">Save</button></form>`;
 }
@@ -786,7 +843,7 @@ function viewStats() {
       </tbody></table></div>
     ${st.commanders.length ? `<div class="panel"><h2 class="h2" style="margin-bottom:8px">Commanders</h2>
       <table class="t"><thead><tr><th>Commander</th><th class="r">Games</th><th class="r">Wins</th><th class="r">Win %</th></tr></thead><tbody>
-      ${st.commanders.map((c) => `<tr><td>${esc(c.commander)}</td><td class="r n">${c.games}</td><td class="r n">${c.wins}</td><td class="r n">${pct(c.wins / c.games)}</td></tr>`).join('')}
+      ${st.commanders.map((c) => `<tr><td><div class="row" style="gap:10px">${artVar(c.art) ? `<span class="thumb" style="${artVar(c.art)}"></span>` : ''}<span>${esc(c.commander)}</span></div></td><td class="r n">${c.games}</td><td class="r n">${c.wins}</td><td class="r n">${pct(c.wins / c.games)}</td></tr>`).join('')}
       </tbody></table></div>` : ''}
     <div class="panel"><h2 class="h2">Recent games</h2>
       ${st.recent.map((g) => `<button class="game-row" data-act="go" data-to="#/g/${g.id}">
@@ -796,6 +853,96 @@ function viewStats() {
     </div>
   </div>`;
 }
+
+// ---------- commander search (Scryfall) ----------
+
+const cmdrSearch = { timer: null, ctl: null, results: [] };
+const PIPS = 'WUBRG';
+
+function syncCmdrField(f) {
+  const input = f.elements.commander;
+  if (!input || !f.elements.card) return;
+  const card = parseCard(f.elements.card.value);
+  // Editing the text after picking drops the card; only an exact pick carries art.
+  const ok = card && card.name === input.value;
+  if (!ok) f.elements.card.value = '';
+  const box = input.closest('.cmdr-input');
+  box.classList.toggle('picked', !!ok);
+  box.style.cssText = ok ? artVar(card.art) : '';
+}
+
+function toCard(c) {
+  const face = c.card_faces?.[0] || {};
+  const img = c.image_uris || face.image_uris || {};
+  return {
+    name: (face.name || c.name).slice(0, 80),
+    art: img.art_crop || null, image: img.normal || null,
+    colors: c.color_identity || [], uri: c.scryfall_uri || null,
+    artist: face.artist || c.artist || '', type: (face.type_line || c.type_line || '').replace('Legendary ', ''),
+  };
+}
+
+async function searchCommanders(text, signal) {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').split(/\s+/).filter(Boolean).slice(0, 6);
+  if (words.join('').length < 2) return null;
+  const q = `is:commander legal:commander ${words.map((w) => `name:"${w}"`).join(' ')}`;
+  const res = await fetch(`https://api.scryfall.com/cards/search?order=edhrec&q=${encodeURIComponent(q)}`, { signal, headers: { Accept: 'application/json' } });
+  if (res.status === 404) return []; // Scryfall's "no cards matched"
+  if (!res.ok) throw new Error(`Scryfall ${res.status}`);
+  const cards = (await res.json()).data.map(toCard);
+  // Scryfall ranks by popularity; put names whose words start with what was typed first.
+  const starts = (c) => words.every((w) => c.name.toLowerCase().split(/[\s,'-]+/).some((n) => n.startsWith(w)));
+  return [...cards.filter(starts), ...cards.filter((c) => !starts(c))].slice(0, 8);
+}
+
+function showCmdrResults(input, html) {
+  const box = input.closest('.field').querySelector('.cmdr-results');
+  box.innerHTML = html;
+}
+
+function cmdrOptions(cards) {
+  if (!cards.length) return '<div class="cmdr-note">No legal commander with that name</div>';
+  return cards.map((c, i) => `<button type="button" class="cmdr-opt" data-act="pickCmdr" data-i="${i}" role="option">
+    <span class="thumb" style="${artVar(c.art)}"></span>
+    <span class="t"><b>${esc(c.name)}</b><small>${esc(c.type)}</small></span>
+    <span class="pips">${c.colors.length ? PIPS.split('').filter((x) => c.colors.includes(x)).map((x) => `<i class="pip ${x}"></i>`).join('') : '<i class="pip C"></i>'}</span>
+  </button>`).join('');
+}
+
+document.addEventListener('input', (e) => {
+  const input = e.target.closest('[data-cmdr]');
+  if (!input) return;
+  syncCmdrField(input.form);
+  clearTimeout(cmdrSearch.timer);
+  cmdrSearch.ctl?.abort();
+  const text = input.value.trim();
+  if (text.length < 2) { showCmdrResults(input, ''); return; }
+  cmdrSearch.timer = setTimeout(async () => {
+    const ctl = (cmdrSearch.ctl = new AbortController());
+    try {
+      const cards = await searchCommanders(text, ctl.signal);
+      if (ctl.signal.aborted || !cards) return;
+      cmdrSearch.results = cards;
+      showCmdrResults(input, cmdrOptions(cards));
+    } catch (err) {
+      if (err.name !== 'AbortError') showCmdrResults(input, '<div class="cmdr-note">Card search is offline. The name is saved as typed.</div>');
+    }
+  }, 220);
+});
+
+document.addEventListener('keydown', (e) => {
+  const input = e.target.closest('[data-cmdr]');
+  if (!input) return;
+  const first = input.closest('.field').querySelector('.cmdr-opt');
+  if (e.key === 'Enter' && first) { e.preventDefault(); first.click(); }
+  if (e.key === 'Escape') showCmdrResults(input, '');
+});
+// Picking a result shouldn't blur the input first (that would close the keyboard and shift the list).
+document.addEventListener('mousedown', (e) => { if (e.target.closest('.cmdr-opt')) e.preventDefault(); });
+document.addEventListener('focusout', (e) => {
+  const input = e.target.closest?.('[data-cmdr]');
+  if (input) setTimeout(() => { if (document.activeElement !== input && input.isConnected) showCmdrResults(input, ''); }, 200);
+});
 
 // ---------- events ----------
 
@@ -828,6 +975,16 @@ const actions = {
     const form = el.closest('form');
     form.querySelectorAll('.swatch').forEach((s) => { s.classList.toggle('on', s === el); s.innerHTML = s === el ? icon.check : ''; });
     form.querySelector('[name=color]').value = d.color;
+  },
+  pickCmdr: (d, el) => {
+    const card = cmdrSearch.results[Number(d.i)];
+    const f = el.closest('form');
+    if (!card || !f) return;
+    f.elements.commander.value = card.name;
+    f.elements.card.value = JSON.stringify(card);
+    syncCmdrField(f);
+    showCmdrResults(f.elements.commander, '');
+    f.elements.commander.blur();
   },
   claim: (d) => {
     store.playerId = d.id;

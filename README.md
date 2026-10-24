@@ -22,7 +22,7 @@ It prints two URLs: `localhost` for the computer, and a `192.168.x.x` LAN addres
 
 ### Flow
 
-1. **Create.** The host enters a name, optionally a commander, and picks a color. The app makes a session with a 4-letter code (no I or O) and a QR code.
+1. **Create.** The host enters a name, optionally a commander, and picks a color. The commander field searches Scryfall as you type and only suggests cards that are legal as a commander (banned ones are left out), most played first, each with its art and colour identity. A name typed by hand still works, just without art. The app makes a session with a 4-letter code (no I or O) and a QR code.
 2. **Join.** Friends scan the QR, or type the code, and take a seat. Name, commander and color are remembered on each phone for next time.
 3. **Lobby.** The seat list is the table order: reorder it with ↑/↓ or shuffle it, then sit clockwise in that order. Choose starting life (20–60, default 40). Green dots show who is connected.
 4. **Play.** Pick who goes first, or roll for it. Phones stay in sync through the whole game.
@@ -40,6 +40,7 @@ It prints two URLs: `localhost` for the computer, and a `192.168.x.x` LAN addres
 - **Table actions** (button on your panel): pick an amount (1, 2, 3, 5, 10 or any value with −/+), then one tap for *Opponents −N*, *Everyone −N*, *Opponents +N*, *Everyone +N*, *Drain N* (each opponent loses N, you gain N × opponents), *Opponents +N poison* or *Proliferate* (+1 poison to each opponent who already has some). Each table action shows up as one grouped entry in the log, and **Undo** reverts the whole thing in one tap.
 - **Undo and Log** sit right on your panel when it isn't your turn. On your turn, that row becomes **Pass turn**.
 - **Menu:** invite QR (to rejoin mid-game), undo your last change, game log, end game, stats, leave, close session.
+- **Commander art** fills a band across the top of each tile behind the player's name and fades into their colour, so life totals always sit on solid colour. Tap a player to see the full card. You can choose or change your commander mid-game from your own player sheet.
 - The screen stays awake (Wake Lock) where the browser allows it, and taps buzz on Android.
 
 ### Sync & resilience
@@ -75,7 +76,7 @@ Built to be read across a table, not admired up close:
 - **Numbers come first.** Life totals use Barlow Condensed, a tall condensed face, so they can be very large and still fit: about 260px for your own life and around 90px for opponents. Digits are fixed-width so totals don't jump around.
 - **Counters are labelled pills with icons:** poison (Φ, the Phyrexian symbol), commander damage (sword) and monarch (crown). Each pill shows its number at a readable size, and a pill turns white with a red number once it reaches lethal.
 - **Plain, high-contrast text** in Barlow, in sentence case. No glows, gradients or decorative labels. White marks "whose turn it is", and red is kept for danger only.
-- Fonts and the QR library ship with the app, so it works with no internet.
+- Fonts and the QR library ship with the app, so it works with no internet. Only commander search and art need it.
 
 ## Architecture
 
@@ -98,4 +99,4 @@ API: `POST /api/sessions` · `GET /api/sessions/:code` · `GET /api/sessions/:co
 - **No accounts.** Stats group players by name (case-insensitive), so "Marco" and "marco" count as the same person but "Marco R." doesn't.
 - **Trust model:** anyone with the code can change anything, which is fine among friends. Only the host can kick players or close the session.
 - **Wake Lock & install-to-home-screen need HTTPS.** On plain LAN `http://` the screen may dim. Deploying (Render, Fly.io, Railway — one Node process, SSE works fine) or running behind `tailscale serve` / `cloudflared` gives you HTTPS.
-- Ideas: commander tax & storm counters, a day/night toggle, dice/coin and "random player" tools, partner commanders (two commander-damage tracks), a per-pod head-to-head matrix, Scryfall commander autocomplete with art on the tiles, a PWA offline shell.
+- Ideas: commander tax & storm counters, a day/night toggle, dice/coin and "random player" tools, partner commanders (two commander-damage tracks), a per-pod head-to-head matrix, a PWA offline shell.

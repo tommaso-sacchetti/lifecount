@@ -139,7 +139,8 @@ const must = (cond, msg) => { if (!cond) throw new ActionError(msg); };
 // Commander card picked from Scryfall. Only keep fields we render, and only Scryfall-hosted URLs.
 function cleanCard(c) {
   if (!c || typeof c !== 'object') return null;
-  const img = (u) => (typeof u === 'string' && u.startsWith('https://cards.scryfall.io/') ? u : null);
+  // Strict charset too: these URLs end up inside CSS url() on every phone.
+  const img = (u) => (typeof u === 'string' && /^https:\/\/cards\.scryfall\.io\/[\w\-./?=&%]+$/.test(u) ? u : null);
   const name = String(c.name || '').trim().slice(0, 80);
   if (!name) return null;
   return {
@@ -148,6 +149,7 @@ function cleanCard(c) {
     image: img(c.image),
     colors: Array.isArray(c.colors) ? c.colors.filter((x) => 'WUBRG'.includes(x) && x.length === 1).slice(0, 5) : [],
     uri: typeof c.uri === 'string' && c.uri.startsWith('https://scryfall.com/') ? c.uri : null,
+    artist: String(c.artist || '').trim().slice(0, 80),
   };
 }
 
