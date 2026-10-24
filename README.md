@@ -37,6 +37,8 @@ It prints two URLs: `localhost` for the computer, and a `192.168.x.x` LAN addres
 - **Delta badges** like `−5 Marco` show who just changed a life total, so nobody is left wondering why their life dropped.
 - **Tap any player** to open their sheet: ±1/5/10 life, poison, commander damage taken from each opponent (it subtracts life automatically), monarch, set as active player, eliminate / undo elimination.
 - **Lethal is suggested, not enforced.** At 0 life, 10 poison or 21 commander damage the tile shows `KO?` and the Eliminate button lights up, because life-gain responses exist.
+- **Table actions** (button on your panel): pick an amount (1, 2, 3, 5, 10 or any value with −/+), then one tap for *Opponents −N*, *Everyone −N*, *Opponents +N*, *Everyone +N*, *Drain N* (each opponent loses N, you gain N × opponents), *Opponents +N poison* or *Proliferate* (+1 poison to each opponent who already has some). Each table action shows up as one grouped entry in the log, and **Undo** reverts the whole thing in one tap.
+- **Undo and Log** sit right on your panel when it isn't your turn. On your turn, that row becomes **Pass turn**.
 - **Menu:** invite QR (to rejoin mid-game), undo your last change, game log, end game, stats, leave, close session.
 - The screen stays awake (Wake Lock) where the browser allows it, and taps buzz on Android.
 
@@ -67,7 +69,13 @@ The **Stats** page builds these from that file:
 
 ### Design language
 
-Dark slate background with a faint dot grid, calm and low-glare for long sessions. Big life numbers in Space Grotesk with fixed-width digits so they don't jump around. Labels and log entries in JetBrains Mono for the nerdy, terminal-ish feel. Each player gets one muted accent color (five of them echo the five mana colors), and that color carries across their tile, their lines in the chart and their entries in the log. Red is kept for danger only. Fonts and the QR library ship with the app, so it works with no internet.
+Built to be read across a table, not admired up close:
+
+- **Every player is a solid block of their own colour.** The colours are deep enough for white text to stay readable on them, and each player's colour follows them everywhere (their tile, their seat number in the lobby, their line in the chart, their name in the log).
+- **Numbers come first.** Life totals use Barlow Condensed, a tall condensed face, so they can be very large and still fit: about 260px for your own life and around 90px for opponents. Digits are fixed-width so totals don't jump around.
+- **Counters are labelled pills with icons:** poison (Φ, the Phyrexian symbol), commander damage (sword) and monarch (crown). Each pill shows its number at a readable size, and a pill turns white with a red number once it reaches lethal.
+- **Plain, high-contrast text** in Barlow, in sentence case. No glows, gradients or decorative labels. White marks "whose turn it is", and red is kept for danger only.
+- Fonts and the QR library ship with the app, so it works with no internet.
 
 ## Architecture
 
@@ -76,10 +84,12 @@ server.js          Node http server: static files, JSON API, SSE, idle sweeper, 
 public/index.html  app shell
 public/app.js      single-file vanilla JS client (hash routes: #/, #/s/CODE, #/stats, #/g/ID)
 public/styles.css  design tokens + components
-public/vendor/     qrcode-generator, fonts (see LICENSES.md)
+public/vendor/     qrcode-generator, Barlow fonts (see LICENSES.md)
 data/              sessions.json (live sessions), games.jsonl (history) — gitignored
 test/smoke.mjs     end-to-end API test
 ```
+
+Actions sent to `/action`: `adjust`, `bulk` (table-wide effects as one undoable group), `passTurn`, `setActive`, `monarch`, `eliminate`, `revive`, `undo`, `end`, plus lobby actions (`seats`, `shuffleSeats`, `settings`, `profile`, `kick`, `start`, `backToLobby`, `close`).
 
 API: `POST /api/sessions` · `GET /api/sessions/:code` · `GET /api/sessions/:code/stream` (SSE) · `POST /api/sessions/:code/join` · `POST /api/sessions/:code/action` · `GET /api/stats` · `GET /api/games[/:id]` · `GET /api/info`
 
