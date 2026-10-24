@@ -6,7 +6,7 @@ const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
 
-const COLORS = ['amber', 'sky', 'violet', 'crimson', 'jade', 'teal', 'orange', 'rose'];
+const COLORS = ['sky', 'crimson', 'jade', 'violet', 'amber', 'teal', 'orange', 'rose'];
 const LETHAL_POISON = 10;
 const LETHAL_CMDR = 21;
 const DELTA_MS = 2600;
@@ -20,11 +20,11 @@ const store = {
   pending: 0,
   es: null,
   info: null,
-  sheet: null, // { kind, id? }
+  sheet: null, // { kind, id?, fresh? }
   deltas: {}, // playerId -> { v, t, by }
+  tableAmount: 1,
   stats: null,
   gameRecord: null,
-  error: null,
 };
 
 // ---------- utils ----------
@@ -45,6 +45,7 @@ const dur = (ms) => {
   return m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m` : `${m}m`;
 };
 const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+const minus = (n) => (n < 0 ? `−${-n}` : signed(n)); // typographic minus for display
 const pct = (x) => `${Math.round(x * 100)}%`;
 let serverSkew = 0; // serverNow - Date.now()
 const now = () => Date.now() + serverSkew;
@@ -68,6 +69,26 @@ async function api(method, url, body) {
   if (!res.ok) { const e = new Error(json.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
   return json;
 }
+
+// ---------- icons ----------
+
+const svg = (body) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+const icon = {
+  poison: svg('<circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v19"/>'), // phyrexian mana
+  cmdr: svg('<path d="M20 4v4.5L10.5 18 6 13.5 15.5 4z"/><path d="M4.5 12.5l7 7M4 20l3-3"/>'),
+  crown: svg('<path d="M3.5 8l4.5 4 4-6.5 4 6.5 4.5-4-1.8 10.5H5.3z"/>'),
+  table: svg('<circle cx="8.5" cy="8" r="3"/><circle cx="16.5" cy="9" r="2.5"/><path d="M2.5 19.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5M15 14.2c3.2-.4 6.5 1.4 6.5 5.3"/>'),
+  undo: svg('<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>'),
+  log: svg('<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>'),
+  next: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'),
+  menu: svg('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  up: svg('<path d="m6 15 6-6 6 6"/>'),
+  down: svg('<path d="m6 9 6 6 6-6"/>'),
+  x: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
+  back: svg('<path d="m15 18-6-6 6-6"/>'),
+  check: svg('<path d="m5 12 5 5 9-10"/>'),
+  dice: svg('<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h.01M15 15h.01M15 9h.01M9 15h.01M12 12h.01"/>'),
+};
 
 // ---------- derived state ----------
 
@@ -160,22 +181,37 @@ async function send(action) {
   }
 }
 
-// Optimistic mirror of the server's adjust() for instant feedback.
-function adjust(target, field, delta, source) {
+// Optimistic mirror of the server's adjust() for instant feedback. Returns false if it was a no-op.
+function applyLocal(target, field, delta, source) {
   const p = byId(target);
-  if (!p || S().status !== 'playing') return;
+  if (!p || S().status !== 'playing') return false;
   if (field === 'life') { p.life += delta; bumpDelta(target, delta, store.playerId); }
-  if (field === 'poison') { if (p.poison + delta < 0) return; p.poison += delta; }
+  if (field === 'poison') { if (p.poison + delta < 0) return false; p.poison += delta; }
   if (field === 'cmdr') {
     const cur = p.cmdr[source] || 0;
-    if (cur + delta < 0) return;
+    if (cur + delta < 0) return false;
     p.cmdr[source] = cur + delta;
     p.life -= delta;
     bumpDelta(target, -delta, store.playerId);
   }
+  return true;
+}
+
+function adjust(target, field, delta, source) {
+  if (!applyLocal(target, field, delta, source)) return;
   buzz();
   render();
   send({ type: 'adjust', target, field, delta, source: source || undefined });
+}
+
+function bulk(label, ops) {
+  ops = ops.filter((op) => applyLocal(op.target, op.field, op.delta, null));
+  if (!ops.length) return;
+  buzz(20);
+  store.sheet = null;
+  render();
+  toast(label);
+  send({ type: 'bulk', label, ops });
 }
 
 // ---------- wake lock ----------
@@ -217,7 +253,7 @@ async function route() {
         if (store.playerId && !st.players.some((p) => p.id === store.playerId)) store.playerId = null;
         if (store.playerId) { ls.set('lc.last', r.code); connect(r.code); }
       } catch (e) {
-        store.state = { status: 'closed', closedReason: e.status === 404 ? 'session not found' : e.message, players: [] };
+        store.state = { status: 'closed', closedReason: e.status === 404 ? 'Session not found.' : e.message, players: [] };
       }
     }
   }
@@ -238,7 +274,7 @@ function render() {
   else if (r.name === 'game') html = viewGameRecord();
   else if (r.name === 'session') {
     const s = S();
-    if (!s) html = `<div class="page"><div class="empty mono">connecting to ${esc(store.code)}…</div></div>`;
+    if (!s) html = `<div class="page"><div class="empty">Connecting to ${esc(store.code)}…</div></div>`;
     else if (s.status === 'closed') html = viewClosed();
     else if (!me()) html = viewJoin();
     else if (s.status === 'lobby') html = viewLobby();
@@ -256,101 +292,97 @@ function renderSheet() {
   const sh = store.sheet;
   if (!sh || !S() || S().status === 'closed') { $sheet.innerHTML = ''; return; }
   const body = {
-    player: sheetPlayer, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart,
+    player: sheetPlayer, table: sheetTable, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart,
   }[sh.kind]?.(sh);
   if (!body) { store.sheet = null; $sheet.innerHTML = ''; return; }
   const enter = sh.fresh ? ' enter' : '';
   sh.fresh = false;
-  $sheet.innerHTML = `<div class="backdrop${enter}" data-act="closeSheet"></div><div class="sheet${enter}" role="dialog"><div class="grab"></div>${body}</div>`;
+  $sheet.innerHTML = `<div class="backdrop${enter}" data-act="closeSheet"></div><div class="sheet${enter}" role="dialog">${body}</div>`;
 }
 
 function openSheet(kind, id) { store.sheet = { kind, id, fresh: true }; renderSheet(); }
 
+const sheetHead = (title, sub = '', color = null) => `<div class="sheet-head ${color ? 'colored' : ''}" ${color ? `data-c="${color}"` : ''}>
+  <div class="t"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div>
+  <button class="icon-btn" data-act="closeSheet" aria-label="Close">${icon.x}</button></div>`;
+
 // Live clocks update in place every second instead of re-rendering everything.
 function tick() {
   const g = S()?.game;
-  document.querySelectorAll('[data-clock="turn"]').forEach((el) => { el.textContent = g?.turnStartedAt ? clock(now() - g.turnStartedAt) : '—'; });
-  document.querySelectorAll('[data-clock="game"]').forEach((el) => { el.textContent = g?.startedAt ? clock((g.endedAt || now()) - g.startedAt) : '—'; });
+  document.querySelectorAll('[data-clock="turn"]').forEach((el) => { el.textContent = g?.turnStartedAt ? clock(now() - g.turnStartedAt) : ''; });
+  document.querySelectorAll('[data-clock="game"]').forEach((el) => { el.textContent = g?.startedAt ? clock((g.endedAt || now()) - g.startedAt) : ''; });
 }
 setInterval(tick, 1000);
 
 // ---------- views: home / join / closed ----------
 
-const icon = {
-  menu: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
-  up: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>',
-  down: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
-  x: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
-  back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
-};
-
 function profileFields(taken = []) {
   const p = ls.get('lc.profile', {});
   const color = p.color && !taken.includes(p.color) ? p.color : COLORS.find((c) => !taken.includes(c));
   return `
-    <label class="field"><span class="label">Your name</span>
-      <input class="input" name="name" maxlength="20" autocomplete="nickname" required value="${esc(p.name || '')}" placeholder="e.g. Tommaso"></label>
-    <label class="field"><span class="label">Commander <span style="opacity:.6">· optional</span></span>
-      <input class="input" name="commander" maxlength="40" value="${esc(p.commander || '')}" placeholder="e.g. Atraxa, Praetors' Voice"></label>
-    <div class="field"><span class="label">Color</span>
-      <div class="swatches">${COLORS.map((c) => `<button type="button" class="swatch ${c === color ? 'on' : ''} ${taken.includes(c) ? 'taken' : ''}" data-c="${c}" data-act="pickColor" data-color="${c}" aria-label="${c}"></button>`).join('')}</div>
+    <label class="field"><span class="cap">Your name</span>
+      <input class="input" name="name" maxlength="20" autocomplete="nickname" required value="${esc(p.name || '')}" placeholder="Tommaso"></label>
+    <label class="field"><span class="cap">Commander (optional)</span>
+      <input class="input" name="commander" maxlength="40" value="${esc(p.commander || '')}" placeholder="Atraxa, Praetors' Voice"></label>
+    <div class="field"><span class="cap">Colour</span>
+      <div class="swatches">${COLORS.map((c) => `<button type="button" class="swatch ${c === color ? 'on' : ''} ${taken.includes(c) ? 'taken' : ''}" data-c="${c}" data-act="pickColor" data-color="${c}" aria-label="${c}">${c === color ? icon.check : ''}</button>`).join('')}</div>
       <input type="hidden" name="color" value="${color}"></div>`;
 }
 
 function viewHome() {
   const last = ls.get('lc.last');
-  return `<div class="page stack">
+  return `<div class="page">
     <div class="brand">
       <img src="/icon.svg" alt="">
-      <div><h1>Lifecount</h1><p class="label">commander · synced across the table</p>
-        <div class="mana-row">${['amber', 'sky', 'violet', 'crimson', 'jade'].map((c) => `<span style="background:var(--${c})"></span>`).join('')}</div></div>
+      <div><h1 class="h1">Lifecount</h1><p>Commander life counter, synced across the table</p></div>
     </div>
-    ${last ? `<button class="btn block" data-act="resume" data-code="${esc(last)}"><span class="label" style="color:inherit">resume</span> <span class="mono">${esc(last)}</span></button>` : ''}
-    <form class="card stack" data-form="create">
-      <div class="spread"><h2 class="h">New table</h2><span class="label">you host</span></div>
+    ${last ? `<button class="btn block big" data-act="resume" data-code="${esc(last)}">Resume game ${esc(last)}</button>` : ''}
+    <form class="panel section" data-form="create">
+      <h2 class="h2">New game</h2>
       ${profileFields()}
-      <button class="btn primary block" type="submit">Create session</button>
+      <button class="btn primary block big" type="submit">Create table</button>
     </form>
-    <div class="divider label">or join</div>
-    <form class="card stack" data-form="joinCode">
-      <input class="input code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="CODE" required>
-      <button class="btn block" type="submit">Join with code</button>
-      <p class="label" style="text-align:center;margin:0">or just scan the host's QR</p>
+    <form class="panel section" data-form="joinCode">
+      <h2 class="h2">Join a table</h2>
+      <input class="input code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="CODE" required aria-label="Session code">
+      <button class="btn block" type="submit">Join</button>
+      <p class="or" style="margin:0">Or scan the QR code on the host's phone</p>
     </form>
-    <button class="btn ghost block" data-act="go" data-to="#/stats">Stats & history →</button>
+    <button class="btn ghost block" data-act="go" data-to="#/stats">Stats and past games</button>
   </div>`;
+}
+
+function seatRow(p, i, right = '') {
+  const s = S();
+  return `<div class="seat-n" data-c="${p.color}">${i + 1}</div>
+    <div class="seat-who"><b>${esc(p.name)}${s.online.includes(p.id) ? '<span class="online on"></span>' : ''}</b>
+      <span class="sub">${esc(p.commander || 'No commander set')}</span></div>${right}`;
 }
 
 function viewJoin() {
   const s = S();
   if (s.status === 'lobby') {
-    return `<div class="page stack">
-      <div class="brand"><img src="/icon.svg" alt=""><div><h1>Join <span class="mono">${esc(s.code)}</span></h1>
-        <p class="label">${s.players.length} at the table · ${s.settings.startingLife} life</p></div></div>
-      <div class="card"><div class="seat-list">${seats().map((p) => `<div class="seat" data-c="${p.color}"><span class="n">${p.seat + 1}</span><div class="who"><b>${esc(p.name)}</b><small>${esc(p.commander || '—')}</small></div><span></span></div>`).join('')}</div></div>
-      <form class="card stack" data-form="join">${profileFields(s.players.map((p) => p.color))}
-        <button class="btn primary block" type="submit">Take a seat</button></form>
+    return `<div class="page">
+      <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Table ${esc(s.code)}</h1>
+        <p>${s.players.length} player${s.players.length === 1 ? '' : 's'} · ${s.settings.startingLife} life</p></div></div>
+      <div class="seat-list">${seats().map((p, i) => `<div class="seat">${seatRow(p, i)}</div>`).join('')}</div>
+      <form class="panel section" data-form="join">${profileFields(s.players.map((p) => p.color))}
+        <button class="btn primary block big" type="submit">Take a seat</button></form>
     </div>`;
   }
   // Mid-game: claim an existing seat (e.g. phone died or switched device).
-  return `<div class="page stack">
-    <div class="brand"><img src="/icon.svg" alt=""><div><h1>Game in progress</h1><p class="label">pick your seat to rejoin</p></div></div>
-    <div class="card"><div class="seat-list">${seats().map((p) => {
-      const online = s.online.includes(p.id);
-      return `<button class="seat" data-c="${p.color}" data-act="claim" data-id="${p.id}" style="text-align:left">
-        <span class="n">${p.seat + 1}</span><div class="who"><b>${esc(p.name)}<span class="dot-online ${online ? 'on' : ''}"></span></b><small>${esc(p.commander || '—')}</small></div>
-        <span class="label">${online ? 'online' : 'claim'}</span></button>`;
-    }).join('')}</div></div>
-    <button class="btn ghost block" data-act="go" data-to="#/">← Home</button>
+  return `<div class="page">
+    <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Game in progress</h1><p>Tap your seat to rejoin</p></div></div>
+    <div class="seat-list">${seats().map((p, i) => `<button class="seat" data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${s.online.includes(p.id) ? 'Online' : 'Rejoin'}</span>`)}</button>`).join('')}</div>
+    <button class="btn ghost block" data-act="go" data-to="#/">Back to home</button>
   </div>`;
 }
 
 function viewClosed() {
-  return `<div class="page stack" style="padding-top:20vh;text-align:center">
-    <div class="label">session ${esc(store.code)}</div>
-    <h1 style="margin:6px 0">Session closed</h1>
-    <p style="color:var(--muted)">${esc(S().closedReason || '')}</p>
-    <button class="btn primary block" data-act="home">New game</button>
+  return `<div class="page" style="padding-top:20vh;text-align:center">
+    <div><h1 class="h1">Session closed</h1>
+    <p class="muted">${esc(S().closedReason || '')}</p></div>
+    <button class="btn primary block big" data-act="home">New game</button>
     <button class="btn ghost block" data-act="go" data-to="#/stats">See stats</button>
   </div>`;
 }
@@ -361,43 +393,37 @@ function viewLobby() {
   const s = S();
   const host = s.hostId === store.playerId;
   const list = seats();
-  return `<div class="page stack">
+  return `<div class="page">
     <div class="spread">
-      <button class="icon-btn" data-act="go" data-to="#/">${icon.back}</button>
-      <span class="label">lobby · ${list.length} player${list.length === 1 ? '' : 's'}</span>
-      <button class="icon-btn" data-act="sheet" data-kind="menu">${icon.menu}</button>
+      <button class="icon-btn" data-act="go" data-to="#/" aria-label="Home">${icon.back}</button>
+      <b>Lobby</b>
+      <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button>
     </div>
-    <div class="card qr-card">
+    <div class="panel qr-wrap">
       <div class="qr">${qrSvg(joinUrl(s.code))}</div>
-      <div><div class="label">session code</div><div class="code-big">${esc(s.code)}</div></div>
+      <div class="code-big">${esc(s.code)}</div>
       <div class="url-small">${esc(joinUrl(s.code))}</div>
     </div>
-    <div class="card stack">
-      <div class="spread"><h2 class="h">Seats</h2><button class="btn sm" data-act="shuffle">Shuffle</button></div>
-      <div class="seat-list">${list.map((p, i) => `
-        <div class="seat" data-c="${p.color}">
-          <span class="n">${String(i + 1).padStart(2, '0')}</span>
-          <div class="who"><b>${esc(p.name)}<span class="dot-online ${s.online.includes(p.id) ? 'on' : ''}"></span></b>
-            <small>${[p.id === store.playerId && 'you', p.id === s.hostId && 'host'].filter(Boolean).map((t) => `<span class="label">${t}</span> · `).join('')}${esc(p.commander || 'no commander set')}</small></div>
-          <div class="tools">
-            ${p.id === store.playerId ? `<button class="btn sm ghost" data-act="sheet" data-kind="profile">Edit</button>` : ''}
-            <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="-1" ${i === 0 ? 'disabled style="opacity:.25"' : ''}>${icon.up}</button>
-            <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="1" ${i === list.length - 1 ? 'disabled style="opacity:.25"' : ''}>${icon.down}</button>
-            ${host && p.id !== store.playerId ? `<button class="icon-btn" data-act="kick" data-id="${p.id}">${icon.x}</button>` : ''}
-          </div>
-        </div>`).join('')}</div>
-      <div class="table-hint">sit clockwise in this order ↻</div>
+    <div class="section">
+      <div class="section-head"><div><h2 class="h2">Seats</h2><span class="muted small">Sit clockwise in this order</span></div><button class="btn sm" data-act="shuffle">${icon.dice} Shuffle</button></div>
+      <div class="seat-list">${list.map((p, i) => `<div class="seat">${seatRow(p, i, `
+          <div class="seat-tools">
+            ${p.id === store.playerId ? `<button class="btn sm" data-act="sheet" data-kind="profile">Edit</button>` : p.id === s.hostId ? '<span class="tag" style="align-self:center;margin-right:6px">Host</span>' : ''}
+            <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon.up}</button>
+            <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">${icon.down}</button>
+            ${host && p.id !== store.playerId ? `<button class="icon-btn" data-act="kick" data-id="${p.id}" aria-label="Remove">${icon.x}</button>` : ''}
+          </div>`)}</div>`).join('')}</div>
     </div>
-    <div class="card stack">
-      <span class="label">Starting life</span>
+    <div class="section">
+      <h2 class="h2">Starting life</h2>
       <div class="seg">${[20, 30, 40, 50, 60].map((n) => `<button class="${s.settings.startingLife === n ? 'on' : ''}" data-act="life" data-n="${n}">${n}</button>`).join('')}</div>
     </div>
-    <button class="btn primary block" data-act="sheet" data-kind="start" style="min-height:56px;font-size:17px">Start game</button>
+    <button class="btn primary block big" data-act="sheet" data-kind="start">Start game</button>
   </div>`;
 }
 
 function qrSvg(text) {
-  if (typeof window.qrcode !== 'function') return `<div class="mono" style="color:#111;line-height:1.4;padding:20px;width:196px">QR unavailable offline — use the code below</div>`;
+  if (typeof window.qrcode !== 'function') return `<div style="color:#111;line-height:1.4;padding:20px;width:210px">QR unavailable. Use the code below.</div>`;
   const qr = window.qrcode(0, 'M');
   qr.addData(text);
   qr.make();
@@ -409,27 +435,25 @@ function qrSvg(text) {
 // Table-shaped layout: left neighbour bottom-left, right neighbour bottom-right,
 // everyone across the table on the top row — like looking at the table from your seat.
 function oppLayout(n) {
-  if (n <= 3) return { cols: Math.max(n, 1), cells: Array.from({ length: n }, (_, i) => [1, i + 1]), center: null };
+  if (n <= 3) return { cols: Math.max(n, 1), cells: Array.from({ length: n }, (_, i) => [1, i + 1]) };
   const cols = n - 2;
-  const cells = [[2, 1], ...Array.from({ length: n - 2 }, (_, i) => [1, i + 1]), [2, cols]];
-  return { cols, cells, center: cols > 2 ? [2, 2, cols - 2] : null };
+  return { cols, cells: [[2, 1], ...Array.from({ length: n - 2 }, (_, i) => [1, i + 1]), [2, cols]] };
 }
 
 function deltaBadge(id) {
   const d = store.deltas[id];
   if (!d || now() - d.t > DELTA_MS || !d.v) return '';
   const by = d.by && d.by !== store.playerId ? byId(d.by)?.name : '';
-  return `<span class="delta ${d.v < 0 ? 'neg' : 'pos'}">${signed(d.v)}${by ? `<small>${esc(by)}</small>` : ''}</span>`;
+  return `<span class="delta ${d.v < 0 ? 'neg' : 'pos'}">${minus(d.v)}${by ? `<small>${esc(by)}</small>` : ''}</span>`;
 }
 
-function badges(p) {
+function pills(p) {
   const out = [];
-  if (p.monarch) out.push('<span class="badge crown">♛</span>');
-  if (p.poison) out.push(`<span class="badge ${p.poison >= LETHAL_POISON ? 'warn' : ''}">☣${p.poison}</span>`);
+  if (lethal(p)) out.push('<span class="pill ko">Lethal</span>');
+  if (p.monarch) out.push(`<span class="pill">${icon.crown}</span>`);
+  if (p.poison) out.push(`<span class="pill ${p.poison >= LETHAL_POISON ? 'warn' : ''}">${icon.poison}${p.poison}</span>`);
   const c = maxCmdr(p);
-  if (c) out.push(`<span class="badge ${c >= LETHAL_CMDR ? 'warn' : ''}">⚔${c}</span>`);
-  if (lethal(p)) out.push('<span class="badge warn">KO?</span>');
-  if (isOut(p)) out.push('<span class="badge">OUT</span>');
+  if (c) out.push(`<span class="pill ${c >= LETHAL_CMDR ? 'warn' : ''}">${icon.cmdr}${c}</span>`);
   return out.join('');
 }
 
@@ -440,60 +464,61 @@ function viewGame() {
   const opps = opponentsInOrder();
   const L = oppLayout(opps.length);
   const active = byId(g.activeId);
-  const size = { 1: 24, 2: 19, 3: 16, 4: 11, 5: 9, 6: 8 }[L.cols] || 7;
+  const size = { 1: 32, 2: 27, 3: 23, 4: 16, 5: 12 }[L.cols] || 10;
 
   const oppHtml = opps.map((p, i) => {
     const [r, c] = L.cells[i];
-    const low = p.life <= 10;
     return `<div class="opp ${p.id === g.activeId ? 'active' : ''} ${isOut(p) ? 'out' : ''}" data-c="${p.color}" style="grid-row:${r};grid-column:${c}">
-      ${p.id === g.activeId ? '<span class="turn-tag">TURN</span>' : ''}
+      ${p.id === g.activeId ? '<span class="turn-flag">Turn</span>' : ''}
       <button class="opp-head" data-act="sheet" data-kind="player" data-id="${p.id}">
-        <span class="opp-seat">${String(p.seat + 1).padStart(2, '0')}</span><span class="opp-name">${esc(p.name)}</span>
+        <span class="opp-name">${esc(p.name)}</span><span class="opp-cmdr">${esc(p.commander || ' ')}</span>
       </button>
-      <button class="opp-life num ${low ? 'low' : ''}" data-act="sheet" data-kind="player" data-id="${p.id}">${p.life}${deltaBadge(p.id)}</button>
+      <button class="opp-life" data-act="sheet" data-kind="player" data-id="${p.id}" aria-label="${esc(p.name)} life ${p.life}">${p.life}${deltaBadge(p.id)}</button>
       <div>
-        <div class="opp-cmdr">${esc(p.commander || '')}</div>
-        <div class="opp-foot">
-          <button class="pm" data-hold="1" data-target="${p.id}" data-field="life" data-delta="-1" aria-label="minus">−</button>
-          <div class="badges">${badges(p)}</div>
-          <button class="pm" data-hold="1" data-target="${p.id}" data-field="life" data-delta="1" aria-label="plus">+</button>
+        <div class="opp-counters">${pills(p)}</div>
+        <div class="opp-pm">
+          <button data-hold="1" data-target="${p.id}" data-field="life" data-delta="-1" aria-label="${esc(p.name)} minus one">−</button>
+          <button data-hold="1" data-target="${p.id}" data-field="life" data-delta="1" aria-label="${esc(p.name)} plus one">+</button>
         </div>
       </div>
+      ${isOut(p) ? '<div class="out-flag"><span>OUT</span></div>' : ''}
     </div>`;
   }).join('');
 
-  const center = L.center ? `<div style="grid-row:${L.center[0]};grid-column:${L.center[1]} / span ${L.center[2]};display:grid;place-items:center;border:1px dashed var(--line);border-radius:var(--r);color:var(--faint)" class="mono">
-      <div style="text-align:center;font-size:11px;letter-spacing:.1em">TABLE<br><span style="font-size:18px">↻</span></div></div>` : '';
-
   const myTurn = g.activeId === self.id;
+  const c = maxCmdr(self);
+  let action;
+  if (lethal(self)) action = `<button class="pass-btn warn wide" data-act="sheet" data-kind="player" data-id="${self.id}">You're at lethal. Concede?</button>`;
+  else if (myTurn) action = `<button class="pass-btn wide" data-act="pass">Pass turn ${icon.next}</button>`;
+  else action = `<div class="wide grid2"><button class="stat-btn" data-act="undo">${icon.undo}<span class="k">Undo</span></button><button class="stat-btn" data-act="sheet" data-kind="log">${icon.log}<span class="k">Log</span></button></div>`;
+
   return `<div class="game">
     <div class="topbar">
-      <div class="meta"><span><b>${esc(s.code)}</b></span><span>T<b>${g.turnNumber}</b></span><span data-clock="game"></span></div>
-      <button class="turn-pill" data-act="sheet" data-kind="player" data-id="${active?.id || ''}" data-c="${active?.color || 'amber'}">
-        <span class="pip"></span><span class="mono" style="font-size:12px">${esc(active?.name || '—')}</span><span class="mono" style="font-size:12px;color:var(--muted)" data-clock="turn"></span>
+      <span class="turn-no">Turn ${g.turnNumber}</span>
+      <button class="turn-now" data-act="sheet" data-kind="player" data-id="${active?.id || ''}" data-c="${active?.color || 'sky'}">
+        <span class="dot"></span><span class="name">${active?.id === self.id ? 'Your turn' : esc(active?.name || '')}</span><span class="clock" data-clock="turn"></span>
       </button>
-      <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="menu">${icon.menu}</button>
+      <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button>
     </div>
-    <div class="opps" style="--cols:${L.cols};--opp-size:${size}vw">${oppHtml}${center}</div>
+    <div class="opps" style="--cols:${L.cols};--opp-size:${size}vw">${oppHtml}</div>
     <div class="me ${myTurn ? 'active' : ''} ${isOut(self) ? 'out' : ''}" data-c="${self.color}">
       <div class="me-head">
-        <button class="who" data-act="sheet" data-kind="player" data-id="${self.id}" style="text-align:left">
-          <b>${esc(self.name)}</b> <span class="label">· seat ${self.seat + 1}</span><small>${esc(self.commander || 'tap for counters')}</small>
+        <button class="who" data-act="sheet" data-kind="player" data-id="${self.id}">
+          <b>${esc(self.name)}</b><span>${esc(self.commander || 'Tap for all counters')}</span>
         </button>
-        <div class="badges">${badges(self)}</div>
+        <div class="row" style="gap:6px">${self.monarch ? `<span class="pill">${icon.crown}</span>` : ''}${myTurn ? '<span class="your-turn">Your turn</span>' : ''}</div>
       </div>
       <div class="me-body">
         <div class="zone minus" data-hold="1" data-target="${self.id}" data-field="life" data-delta="-1">−</div>
         <div class="zone plus" data-hold="1" data-target="${self.id}" data-field="life" data-delta="1">+</div>
-        <div class="me-life num ${self.life <= 10 ? 'low' : ''}">${self.life}${deltaBadge(self.id)}</div>
-        ${isOut(self) ? `<div class="out-banner"><div><div class="label">you're out · place ${self.place}</div><p style="color:var(--muted);margin:6px 0 12px">you can still adjust everyone else</p><button class="btn sm" data-act="revive" data-id="${self.id}">Undo elimination</button></div></div>` : ''}
+        <div class="me-life">${self.life}${deltaBadge(self.id)}</div>
+        ${isOut(self) ? `<div class="me-out"><div><b>You're out</b><p class="muted">Place ${self.place}. You can still update everyone else.</p><button class="btn sm" data-act="revive" data-id="${self.id}">Undo elimination</button></div></div>` : ''}
       </div>
       <div class="me-foot">
-        <button class="chip" data-act="sheet" data-kind="player" data-id="${self.id}">☣ <b>${self.poison}</b></button>
-        <button class="chip ${maxCmdr(self) >= LETHAL_CMDR ? 'warn' : ''}" data-act="sheet" data-kind="player" data-id="${self.id}">⚔ <b>${maxCmdr(self)}</b></button>
-        ${lethal(self) ? `<button class="chip warn grow" data-act="sheet" data-kind="player" data-id="${self.id}"><b>Lethal — concede?</b></button>`
-          : myTurn ? `<button class="chip turn grow" data-act="pass">Pass turn →</button>`
-          : `<button class="chip grow" data-act="sheet" data-kind="log">log</button>`}
+        <button class="stat-btn ${self.poison >= LETHAL_POISON ? 'warn' : ''}" data-act="sheet" data-kind="player" data-id="${self.id}">${icon.poison}<span class="v">${self.poison}</span><span class="k">Poison</span></button>
+        <button class="stat-btn ${c >= LETHAL_CMDR ? 'warn' : ''}" data-act="sheet" data-kind="player" data-id="${self.id}">${icon.cmdr}<span class="v">${c}</span><span class="k">Cmdr<br>damage</span></button>
+        <button class="stat-btn" data-act="sheet" data-kind="table">${icon.table}<span class="k">Table<br>actions</span></button>
+        ${action}
       </div>
     </div>
   </div>`;
@@ -505,30 +530,58 @@ function sheetPlayer({ id }) {
   const p = byId(id);
   if (!p || S().status !== 'playing') return null;
   const s = S();
+  const self = p.id === store.playerId;
   const others = seats().filter((q) => q.id !== p.id);
-  const step = (field, d, src = '') => `<button class="step ${d < 0 ? 'neg' : 'pos'}" data-hold="1" data-target="${p.id}" data-field="${field}" data-delta="${d}" data-source="${src}">${signed(d)}</button>`;
+  const step = (field, d, src = '') => `<button class="step ${d < 0 ? 'neg' : 'pos'}" data-hold="1" data-target="${p.id}" data-field="${field}" data-delta="${d}" data-source="${src}">${minus(d)}</button>`;
   return `
-    <div class="spread" data-c="${p.color}">
-      <div class="row"><span class="pip"></span><div><h3>${esc(p.name)}${p.id === store.playerId ? ' <span class="label">· you</span>' : ''}</h3><div style="color:var(--muted);font-size:14px">${esc(p.commander || 'seat ' + (p.seat + 1))}</div></div></div>
-      <button class="icon-btn" data-act="closeSheet">${icon.x}</button>
-    </div>
-    <div class="section-title label">Life</div>
-    <div class="sheet-life">${step('life', -10)}${step('life', -5)}${step('life', -1)}
-      <div class="v num ${p.life <= 10 ? 'low' : ''}" style="${p.life <= 10 ? 'color:var(--danger)' : ''}">${p.life}</div>
+    ${sheetHead(`${esc(p.name)}${self ? ' (you)' : ''}`, esc(p.commander || `Seat ${p.seat + 1}`), p.color)}
+    <h4>Life</h4>
+    <div class="life-edit">${step('life', -10)}${step('life', -5)}${step('life', -1)}
+      <div class="v" style="${p.life <= 0 ? 'color:var(--danger)' : ''}">${p.life}</div>
       ${step('life', 1)}${step('life', 5)}${step('life', 10)}</div>
-    <div class="section-title label">Poison</div>
-    <div class="counter"><div class="lbl">☣ <span>Infect counters</span></div>${step('poison', -1)}<div class="val ${p.poison >= LETHAL_POISON ? 'warn' : ''}">${p.poison}</div>${step('poison', 1)}</div>
-    ${others.length ? `<div class="section-title label">Commander damage taken · also subtracts life</div>
-      ${others.map((q) => `<div class="counter" data-c="${q.color}"><div class="lbl"><span class="pip"></span><span>${esc(q.commander || q.name)}${q.commander ? ` <span style="color:var(--faint)">· ${esc(q.name)}</span>` : ''}</span></div>
+    <h4>Poison</h4>
+    <div class="counter"><div class="lbl">${icon.poison}<span>Poison <em>/ ${LETHAL_POISON}</em></span></div>${step('poison', -1)}<div class="val ${p.poison >= LETHAL_POISON ? 'warn' : ''}">${p.poison}</div>${step('poison', 1)}</div>
+    ${others.length ? `<h4>Commander damage taken (also removes life)</h4>
+      ${others.map((q) => `<div class="counter"><div class="lbl" data-c="${q.color}"><span class="dot"></span><span class="two"><span>${esc(q.name)}</span>${q.commander ? `<small>${esc(q.commander)}</small>` : ''}</span></div>
         ${step('cmdr', -1, q.id)}<div class="val ${(p.cmdr[q.id] || 0) >= LETHAL_CMDR ? 'warn' : ''}">${p.cmdr[q.id] || 0}</div>${step('cmdr', 1, q.id)}</div>`).join('')}` : ''}
-    <div class="section-title label">Table</div>
+    <h4>Table</h4>
     <div class="grid2">
-      <button class="btn" data-act="monarch" data-id="${p.id}">${p.monarch ? '♛ Remove monarch' : '♛ Make monarch'}</button>
-      <button class="btn" data-act="setActive" data-id="${p.id}" ${s.game.activeId === p.id || isOut(p) ? 'disabled' : ''}>Set as active</button>
+      <button class="btn" data-act="monarch" data-id="${p.id}">${p.monarch ? 'Not monarch' : 'Monarch'}</button>
+      <button class="btn" data-act="setActive" data-id="${p.id}" ${s.game.activeId === p.id || isOut(p) ? 'disabled' : ''}>Give the turn</button>
     </div>
     <div style="margin-top:8px">${isOut(p)
       ? `<button class="btn block" data-act="revive" data-id="${p.id}">Undo elimination</button>`
-      : `<button class="btn ${lethal(p) ? 'accent' : 'danger'} block" data-c="crimson" data-act="eliminate" data-id="${p.id}">${p.id === store.playerId ? 'I concede / I\'m dead' : `Eliminate ${esc(p.name)}`}</button>`}</div>`;
+      : `<button class="btn danger block" data-act="eliminate" data-id="${p.id}">${self ? 'I concede' : `Eliminate ${esc(p.name)}`}</button>`}</div>`;
+}
+
+function sheetTable() {
+  if (S().status !== 'playing') return null;
+  const n = store.tableAmount;
+  const opps = opponentsInOrder().filter((p) => !isOut(p));
+  const poisoned = opps.filter((p) => p.poison > 0);
+  const k = opps.length;
+  const btn = (act, title, sub, cls = '', extra = '') => `<button class="tbl-btn ${extra}" data-act="table" data-op="${act}" ${act === 'proliferate' && !poisoned.length ? 'disabled' : ''}><b class="${cls}">${title}</b><span>${sub}</span></button>`;
+  return `${sheetHead('Table actions', 'Applies to every player still in the game')}
+    <div class="amount">
+      <button data-act="amount" data-d="-1" aria-label="Less">−</button>
+      <div class="v">${n}</div>
+      <button data-act="amount" data-d="1" aria-label="More">+</button>
+    </div>
+    <div class="amount-quick">${[1, 2, 3, 5, 10].map((x) => `<button class="${x === n ? 'on' : ''}" data-act="amount" data-set="${x}">${x}</button>`).join('')}</div>
+    <h4>Life</h4>
+    <div class="grid2">
+      ${btn('oppLose', `Opponents −${n}`, `${k} player${k === 1 ? '' : 's'} lose ${n}`, 'neg')}
+      ${btn('allLose', `Everyone −${n}`, 'You included', 'neg')}
+      ${btn('oppGain', `Opponents +${n}`, `${k} player${k === 1 ? '' : 's'} gain ${n}`, 'pos')}
+      ${btn('allGain', `Everyone +${n}`, 'You included', 'pos')}
+      ${btn('drain', `Drain ${n}`, `Opponents lose ${n}, you gain ${n * k}`, '', 'wide')}
+    </div>
+    <h4>Poison</h4>
+    <div class="grid2">
+      ${btn('oppPoison', `Opponents +${n} poison`, `${k} player${k === 1 ? '' : 's'}`)}
+      ${btn('proliferate', 'Proliferate', poisoned.length ? `+1 poison to ${poisoned.map((p) => esc(p.name)).join(', ')}` : 'No opponent has poison')}
+    </div>
+    <p class="muted small" style="margin:14px 0 0">Undo reverts a table action in one tap. Life your actions take from opponents counts as your damage in the stats.</p>`;
 }
 
 function sheetMenu() {
@@ -536,60 +589,70 @@ function sheetMenu() {
   const host = s.hostId === store.playerId;
   const playing = s.status === 'playing';
   const idleLeft = s.idleMinutes * 60000 - (now() - s.lastActivity);
-  return `
-    <div class="spread"><h3>Session <span class="mono">${esc(s.code)}</span></h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <p class="label" style="margin:4px 0 14px">auto-closes after ${s.idleMinutes} min idle · ${dur(Math.max(0, idleLeft))} left</p>
-    <div class="stack">
-      <button class="btn block" data-act="sheet" data-kind="invite">Show QR / invite</button>
-      ${playing ? `<button class="btn block" data-act="undo">Undo my last change</button>
-        <button class="btn block" data-act="sheet" data-kind="log">Game log</button>
-        <button class="btn block" data-act="sheet" data-kind="end">End game…</button>` : ''}
-      <button class="btn block" data-act="go" data-to="#/stats">Stats & history</button>
+  return `${sheetHead(`Table ${esc(s.code)}`, playing ? `Game time <span data-clock="game"></span>` : `Closes after ${s.idleMinutes} min without activity`)}
+    <div class="section" style="gap:8px">
+      <button class="btn block" data-act="sheet" data-kind="invite">Show QR code</button>
+      ${playing ? `<button class="btn block" data-act="undo">${icon.undo} Undo my last change</button>
+        <button class="btn block" data-act="sheet" data-kind="log">${icon.log} Game log</button>
+        <button class="btn block" data-act="sheet" data-kind="end">End game</button>` : ''}
+      <button class="btn block" data-act="go" data-to="#/stats">Stats and past games</button>
       <button class="btn ghost block" data-act="leave">Leave on this phone</button>
-      ${host ? `<button class="btn danger block" data-act="closeSession">Close session for everyone</button>` : ''}
+      ${host ? `<button class="btn danger block" data-act="closeSession">Close the table for everyone</button>` : ''}
+      <p class="muted small" style="text-align:center;margin:4px 0 0">Auto-closes in ${dur(Math.max(0, idleLeft))} if nobody plays</p>
     </div>`;
 }
 
 function sheetInvite() {
   const s = S();
-  return `<div class="spread"><h3>Invite</h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <div class="qr-card"><div class="qr">${qrSvg(joinUrl(s.code))}</div><div class="code-big">${esc(s.code)}</div>
+  return `${sheetHead('Invite')}
+    <div class="qr-wrap"><div class="qr">${qrSvg(joinUrl(s.code))}</div><div class="code-big">${esc(s.code)}</div>
     <div class="url-small">${esc(joinUrl(s.code))}</div>
-    ${s.status === 'playing' ? '<p class="label">mid-game: people can rejoin an existing seat</p>' : ''}</div>`;
+    ${s.status === 'playing' ? '<p class="muted small">During a game, people can rejoin their own seat.</p>' : ''}</div>`;
 }
 
 function describe(e, names) {
   const n = (id) => `<span class="who-tag" data-c="${byId(id)?.color || ''}">${esc(names(id))}</span>`;
   if (e.kind === 'adjust') {
-    const what = e.field === 'life' ? 'life' : e.field === 'poison' ? 'poison' : `cmdr dmg from ${n(e.source)}`;
-    const src = e.field === 'life' && e.source && e.source !== e.by ? ` ← ${n(e.source)}` : '';
-    return { text: `${n(e.target)} ${what}${src}${e.by !== e.target ? ` <span style="color:var(--faint)">by ${esc(names(e.by))}</span>` : ''}`, d: e.field === 'cmdr' ? -e.delta : e.delta, poison: e.field === 'poison' };
+    const what = e.field === 'life' ? '' : e.field === 'poison' ? ' poison' : ` cmdr damage from ${n(e.source)}`;
+    const by = e.by !== e.target && !e.group && !(e.field === 'cmdr' && e.by === e.source) ? ` <span class="by">by ${esc(names(e.by))}</span>` : '';
+    return { text: `${n(e.target)}${what}${by}`, d: e.field === 'cmdr' ? -e.delta : e.delta, poison: e.field === 'poison' };
   }
-  if (e.kind === 'eliminate') return { text: `${n(e.target)} eliminated ☠` };
-  if (e.kind === 'revive') return { text: `${n(e.target)} back in the game` };
-  if (e.kind === 'monarch') return { text: `${n(e.target)} ${e.on ? 'became' : 'is no longer'} monarch ♛` };
-  if (e.kind === 'start') return { text: `game started · ${n(e.target)} goes first` };
+  if (e.kind === 'table') return { text: `${n(e.by)}: ${esc(e.label)}`, group: true };
+  if (e.kind === 'eliminate') return { text: `${n(e.target)} is out` };
+  if (e.kind === 'revive') return { text: `${n(e.target)} is back in` };
+  if (e.kind === 'monarch') return { text: `${n(e.target)} ${e.on ? 'became' : 'is no longer'} the monarch` };
+  if (e.kind === 'start') return { text: `Game started. ${n(e.target)} goes first` };
   return { text: e.kind };
+}
+
+function logRows(log, startedAt, names) {
+  // Newest first, but a table action's header stays above the changes it caused.
+  const out = [];
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e.group && e.kind === 'adjust') continue;
+    if (e.kind === 'table') { out.push(e, ...log.filter((x) => x.group === e.group && x.kind === 'adjust')); continue; }
+    out.push(e);
+  }
+  return out.slice(0, 150).map((e) => {
+    const x = describe(e, names);
+    const val = x.d === undefined ? '' : `<span class="d ${(x.poison ? -x.d : x.d) < 0 ? 'neg' : 'pos'}">${minus(x.d)}${x.poison ? ' ☣' : ''}</span>`;
+    const t = e.group && e.kind === 'adjust' ? '' : `T${e.turn ?? ''} · ${clock(e.t - startedAt)}`;
+    return `<div class="log-row ${x.group ? 'group' : ''}"><span class="t">${t}</span><span${e.group && e.kind === 'adjust' ? ' style="padding-left:12px"' : ''}>${x.text}</span>${val}</div>`;
+  }).join('');
 }
 
 function sheetLog() {
   const g = S().game;
   if (!g) return null;
-  const names = (id) => byId(id)?.name || '?';
-  const rows = [...g.log].reverse().slice(0, 120).map((e) => {
-    const x = describe(e, names);
-    const d = x.d === undefined ? '' : `<span class="d ${(x.poison ? -x.d : x.d) < 0 ? 'neg' : 'pos'}">${signed(x.d)}</span>`;
-    return `<div class="log-row"><span class="t">T${e.turn ?? ''} ${clock(e.t - g.startedAt)}</span><span>${x.text}</span>${d}</div>`;
-  }).join('');
-  return `<div class="spread"><h3>Game log</h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <div class="log" style="margin-top:10px">${rows || '<div class="empty">nothing yet</div>'}</div>`;
+  const rows = logRows(g.log, g.startedAt, (id) => byId(id)?.name || '?');
+  return `${sheetHead('Game log', `${g.log.length} events`)}<div class="log">${rows || '<div class="empty">Nothing yet</div>'}</div>`;
 }
 
 function sheetEnd() {
   const left = seats().filter((p) => !isOut(p));
-  return `<div class="spread"><h3>End game</h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <p class="label" style="margin:6px 0 12px">who won?</p>
-    <div class="stack">${left.map((p) => `<button class="btn block" data-c="${p.color}" data-act="endGame" data-id="${p.id}" style="justify-content:flex-start"><span class="pip"></span>${esc(p.name)}<span style="color:var(--muted);font-weight:400">${esc(p.commander || '')}</span></button>`).join('')}
+  return `${sheetHead('End game', 'Who won?')}
+    <div class="section" style="gap:8px">${left.map((p) => `<button class="btn fill block big" data-c="${p.color}" data-act="endGame" data-id="${p.id}">${esc(p.name)}</button>`).join('')}
     <button class="btn ghost block" data-act="endGame" data-id="">Draw / no winner</button></div>`;
 }
 
@@ -597,15 +660,15 @@ function sheetProfile() {
   const p = me();
   const taken = S().players.filter((q) => q.id !== p.id).map((q) => q.color);
   ls.set('lc.profile', { ...ls.get('lc.profile', {}), name: p.name, commander: p.commander, color: p.color });
-  return `<div class="spread"><h3>Your seat</h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <form class="stack" data-form="profile" style="margin-top:12px">${profileFields(taken)}<button class="btn primary block" type="submit">Save</button></form>`;
+  return `${sheetHead('Your seat')}
+    <form class="section" data-form="profile">${profileFields(taken)}<button class="btn primary block big" type="submit">Save</button></form>`;
 }
 
 function sheetStart() {
-  return `<div class="spread"><h3>Who goes first?</h3><button class="icon-btn" data-act="closeSheet">${icon.x}</button></div>
-    <div class="stack" style="margin-top:12px">
-      <button class="btn primary block" data-act="start" data-id="">🎲 Random</button>
-      ${seats().map((p) => `<button class="btn block" data-c="${p.color}" data-act="start" data-id="${p.id}" style="justify-content:flex-start"><span class="pip"></span>${esc(p.name)}</button>`).join('')}
+  return `${sheetHead('Who goes first?')}
+    <div class="section" style="gap:8px">
+      <button class="btn primary block big" data-act="start" data-id="">${icon.dice} Random</button>
+      ${seats().map((p) => `<button class="btn fill block" data-c="${p.color}" data-act="start" data-id="${p.id}">${esc(p.name)}</button>`).join('')}
     </div>`;
 }
 
@@ -633,7 +696,7 @@ function summarize(g) {
 }
 
 function lifeChart(g, sum) {
-  const W = 340, H = 170, P = { l: 26, r: 8, t: 10, b: 20 };
+  const W = 340, H = 180, P = { l: 28, r: 8, t: 10, b: 22 };
   const all = Object.values(sum.series).flat();
   const maxY = Math.max(g.startingLife, ...all.map((x) => x[1]));
   const minY = Math.min(0, ...all.map((x) => x[1]));
@@ -644,14 +707,14 @@ function lifeChart(g, sum) {
     // step line: life holds until the next change
     let d = `M${X(pts[0][0]).toFixed(1)},${Y(pts[0][1]).toFixed(1)}`;
     for (let i = 1; i < pts.length; i++) d += `H${X(pts[i][0]).toFixed(1)}V${Y(pts[i][1]).toFixed(1)}`;
-    return `<path d="${d}" fill="none" stroke="var(--${p.color})" stroke-width="2" stroke-linejoin="round" opacity="${p.id === g.winnerId ? 1 : 0.75}"/>`;
+    return `<path d="${d}" fill="none" data-c="${p.color}" style="stroke:var(--hi)" stroke-width="2.5" stroke-linejoin="round"/>`;
   }).join('');
   const ticks = [minY, Math.round((minY + maxY) / 2), maxY];
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Life totals over time">
-    ${ticks.map((v) => `<line class="axis" x1="${P.l}" x2="${W - P.r}" y1="${Y(v)}" y2="${Y(v)}" stroke-dasharray="${v === 0 ? '' : '2 4'}"/><text x="${P.l - 6}" y="${Y(v) + 3}" text-anchor="end">${v}</text>`).join('')}
+    ${ticks.map((v) => `<line class="axis" x1="${P.l}" x2="${W - P.r}" y1="${Y(v)}" y2="${Y(v)}" stroke-dasharray="${v === 0 ? '' : '2 4'}"/><text x="${P.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join('')}
     <text x="${P.l}" y="${H - 4}">0:00</text><text x="${W - P.r}" y="${H - 4}" text-anchor="end">${clock(sum.end)}</text>
     ${lines}</svg>
-    <div class="legend" style="margin-top:8px">${g.players.map((p) => `<span data-c="${p.color}"><span class="pip"></span>${esc(p.name)}</span>`).join('')}</div>`;
+    <div class="legend">${g.players.map((p) => `<span data-c="${p.color}"><span class="dot"></span>${esc(p.name)}</span>`).join('')}</div>`;
 }
 
 function summaryBody(g) {
@@ -661,24 +724,24 @@ function summaryBody(g) {
   const turnsDone = g.turns.filter((t) => t.end);
   const avgTurn = turnsDone.length ? turnsDone.reduce((a, t) => a + t.end - t.start, 0) / turnsDone.length : 0;
   return `
-    <div class="winner" data-c="${winner?.color || 'amber'}">
-      <div class="label">${winner ? 'winner' : 'game over'}</div>
+    <div class="winner" data-c="${winner?.color || 'sky'}">
+      <div class="cap">${winner ? 'Winner' : 'Game over'}</div>
       <h2>${winner ? esc(winner.name) : 'Draw'}</h2>
-      <div style="color:var(--muted)">${esc(winner?.commander || '')}</div>
+      <div class="sub">${esc(winner?.commander || '')}</div>
     </div>
     <div class="kpis">
-      <div class="kpi"><span class="label">duration</span><b class="num">${dur(sum.end)}</b></div>
-      <div class="kpi"><span class="label">turns</span><b class="num">${g.turns.length}</b></div>
-      <div class="kpi"><span class="label">avg turn</span><b class="num">${clock(avgTurn)}</b></div>
+      <div class="kpi"><span class="cap">Length</span><b>${dur(sum.end)}</b></div>
+      <div class="kpi"><span class="cap">Turns</span><b>${g.turns.length}</b></div>
+      <div class="kpi"><span class="cap">Avg turn</span><b>${clock(avgTurn)}</b></div>
     </div>
-    <div class="card"><div class="spread" style="margin-bottom:8px"><span class="label">life over time</span></div>${lifeChart(g, sum)}</div>
-    <div class="card">
-      <table class="t"><thead><tr><th>#</th><th>player</th><th class="r">life</th><th class="r">dealt</th><th class="r">KOs</th><th class="r">turn</th></tr></thead><tbody>
-      ${ranked.map((p) => { const tt = sum.turnTime[p.id]; return `<tr data-c="${p.color}"><td class="place">${p.place || '–'}</td>
-        <td><div class="row" style="gap:8px"><span class="pip"></span><div style="min-width:0"><div>${esc(p.name)}</div><div style="color:var(--faint);font-size:12px">${esc(p.commander || '')}</div></div></div></td>
-        <td class="r">${p.finalLife}</td><td class="r">${sum.dealt[p.id] || 0}</td><td class="r">${sum.kos[p.id] || 0}</td><td class="r mono" style="font-size:12px">${tt ? clock(tt.ms / tt.n) : '–'}</td></tr>`; }).join('')}
+    <div class="panel"><h2 class="h2" style="margin-bottom:10px">Life over time</h2>${lifeChart(g, sum)}</div>
+    <div class="panel">
+      <table class="t"><thead><tr><th></th><th>Player</th><th class="r">Life</th><th class="r">Dealt</th><th class="r">KOs</th><th class="r">Turn</th></tr></thead><tbody>
+      ${ranked.map((p) => { const tt = sum.turnTime[p.id]; return `<tr><td class="place">${p.place || '–'}</td>
+        <td><div class="row" style="gap:8px" data-c="${p.color}"><span class="dot"></span><div style="min-width:0"><div>${esc(p.name)}</div><div class="sub">${esc(p.commander || '')}</div></div></div></td>
+        <td class="r n">${p.finalLife}</td><td class="r n">${sum.dealt[p.id] || 0}</td><td class="r n">${sum.kos[p.id] || 0}</td><td class="r">${tt ? clock(tt.ms / tt.n) : '–'}</td></tr>`; }).join('')}
       </tbody></table>
-      <p class="label" style="margin:10px 0 0">dealt = life you took from others from your phone, plus commander damage</p>
+      <p class="muted small" style="margin:10px 0 0">Dealt counts life a player took from others on their phone, plus commander damage.</p>
     </div>`;
 }
 
@@ -686,52 +749,70 @@ function viewEnded() {
   const s = S();
   const g = { ...s.game, startingLife: s.settings.startingLife, players: s.players.map((p) => ({ ...p, finalLife: p.life })) };
   const host = s.hostId === store.playerId;
-  return `<div class="page stack">
-    <div class="spread"><span class="label">session ${esc(s.code)}</span><button class="icon-btn" data-act="sheet" data-kind="menu">${icon.menu}</button></div>
+  return `<div class="page">
+    <div class="spread"><b>Table ${esc(s.code)}</b><button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button></div>
     ${summaryBody(g)}
-    <button class="btn primary block" data-act="sheet" data-kind="start" style="min-height:56px">Rematch · same seats</button>
-    <button class="btn block" data-act="backToLobby">Back to lobby (change seats)</button>
-    ${host ? '<button class="btn danger block" data-act="closeSession">Close session</button>' : ''}
+    <button class="btn primary block big" data-act="sheet" data-kind="start">Rematch, same seats</button>
+    <button class="btn block" data-act="backToLobby">Back to lobby</button>
+    ${host ? '<button class="btn danger block" data-act="closeSession">Close the table</button>' : ''}
   </div>`;
 }
 
 function viewGameRecord() {
   const g = store.gameRecord;
-  return `<div class="page stack">
-    <div class="spread"><button class="icon-btn" data-act="go" data-to="#/stats">${icon.back}</button><span class="label">${g ? new Date(g.endedAt).toLocaleString() : 'loading…'}</span><span style="width:40px"></span></div>
+  return `<div class="page">
+    <div class="spread"><button class="icon-btn" data-act="go" data-to="#/stats" aria-label="Back">${icon.back}</button><span class="muted">${g ? new Date(g.endedAt).toLocaleString() : 'Loading…'}</span><span style="width:44px"></span></div>
     ${g ? summaryBody(g) : ''}
   </div>`;
 }
 
 function viewStats() {
   const st = store.stats;
-  const head = `<div class="spread"><button class="icon-btn" data-act="back">${icon.back}</button><span class="label">stats & history</span><a class="btn sm ghost" href="/api/games" download>Export</a></div>`;
-  if (!st) return `<div class="page stack">${head}<div class="empty mono">loading…</div></div>`;
-  if (!st.games) return `<div class="page stack">${head}<div class="card empty">No finished games yet.<br>Play one and the numbers show up here.</div></div>`;
-  return `<div class="page stack">${head}
+  const head = `<div class="spread"><button class="icon-btn" data-act="back" aria-label="Back">${icon.back}</button><h1 class="h1" style="font-size:32px">Stats</h1><a class="btn sm ghost" href="/api/games" download>Export</a></div>`;
+  if (!st) return `<div class="page">${head}<div class="empty">Loading…</div></div>`;
+  if (!st.games) return `<div class="page">${head}<div class="panel empty">No finished games yet.<br>Play one and the numbers show up here.</div></div>`;
+  return `<div class="page">${head}
     <div class="kpis">
-      <div class="kpi"><span class="label">games</span><b class="num">${st.games}</b></div>
-      <div class="kpi"><span class="label">avg length</span><b class="num">${dur(st.avgDurationMs)}</b></div>
-      <div class="kpi"><span class="label">avg turns</span><b class="num">${Math.round(st.avgTurns)}</b></div>
+      <div class="kpi"><span class="cap">Games</span><b>${st.games}</b></div>
+      <div class="kpi"><span class="cap">Avg length</span><b>${dur(st.avgDurationMs)}</b></div>
+      <div class="kpi"><span class="cap">Avg turns</span><b>${Math.round(st.avgTurns)}</b></div>
     </div>
-    <div class="card"><h2 class="h" style="margin-bottom:8px">Players</h2>
-      <table class="t"><thead><tr><th>player</th><th class="r">W/G</th><th class="r">win%</th><th class="r">dealt</th><th class="r">KOs</th><th class="r">turn</th></tr></thead><tbody>
-      ${st.players.map((p) => `<tr><td><div>${esc(p.name)}</div><div style="color:var(--faint);font-size:12px">${esc(p.favorite)}</div></td><td class="r">${p.wins}/${p.games}</td><td class="r">${pct(p.winRate)}</td><td class="r">${p.damage}</td><td class="r">${p.kos}</td><td class="r mono" style="font-size:12px">${p.avgTurnMs ? clock(p.avgTurnMs) : '–'}</td></tr>`).join('')}
+    <div class="panel"><h2 class="h2" style="margin-bottom:8px">Players</h2>
+      <table class="t"><thead><tr><th>Player</th><th class="r">Wins</th><th class="r">Win %</th><th class="r">Dealt</th><th class="r">KOs</th></tr></thead><tbody>
+      ${st.players.map((p) => `<tr><td><div>${esc(p.name)}</div><div class="sub">${esc(p.favorite)}${p.avgTurnMs ? ` · ${clock(p.avgTurnMs)}/turn` : ''}</div></td><td class="r n">${p.wins}<span class="sub">/${p.games}</span></td><td class="r n">${pct(p.winRate)}</td><td class="r n">${p.damage}</td><td class="r n">${p.kos}</td></tr>`).join('')}
       </tbody></table></div>
-    ${st.commanders.length ? `<div class="card"><h2 class="h" style="margin-bottom:8px">Commanders</h2>
-      <table class="t"><thead><tr><th>commander</th><th class="r">games</th><th class="r">wins</th><th class="r">win%</th></tr></thead><tbody>
-      ${st.commanders.map((c) => `<tr><td>${esc(c.commander)}</td><td class="r">${c.games}</td><td class="r">${c.wins}</td><td class="r">${pct(c.wins / c.games)}</td></tr>`).join('')}
+    ${st.commanders.length ? `<div class="panel"><h2 class="h2" style="margin-bottom:8px">Commanders</h2>
+      <table class="t"><thead><tr><th>Commander</th><th class="r">Games</th><th class="r">Wins</th><th class="r">Win %</th></tr></thead><tbody>
+      ${st.commanders.map((c) => `<tr><td>${esc(c.commander)}</td><td class="r n">${c.games}</td><td class="r n">${c.wins}</td><td class="r n">${pct(c.wins / c.games)}</td></tr>`).join('')}
       </tbody></table></div>` : ''}
-    <div class="card"><h2 class="h">Recent games</h2>
+    <div class="panel"><h2 class="h2">Recent games</h2>
       ${st.recent.map((g) => `<button class="game-row" data-act="go" data-to="#/g/${g.id}">
-        <div><div>${g.winner ? `♛ ${esc(g.winner)}` : 'Draw'}</div><div class="row" style="gap:5px;margin-top:6px">${g.players.map((p) => `<span class="pip" data-c="${p.color}" title="${esc(p.name)}"></span>`).join('')}<span style="color:var(--faint);font-size:12px;margin-left:4px">${g.players.map((p) => esc(p.name)).join(' · ')}</span></div></div>
-        <div style="text-align:right" class="mono"><div style="font-size:13px">${dur(g.durationMs)} · T${g.turns}</div><div style="color:var(--faint);font-size:11px;margin-top:6px">${new Date(g.endedAt).toLocaleDateString()}</div></div>
+        <div style="min-width:0"><div style="font-weight:600">${g.winner ? esc(g.winner) + ' won' : 'Draw'}</div><div class="muted small">${g.players.map((p) => esc(p.name)).join(', ')}</div></div>
+        <div style="text-align:right;flex:none"><div>${dur(g.durationMs)} · ${g.turns} turns</div><div class="muted small">${new Date(g.endedAt).toLocaleDateString()}</div></div>
       </button>`).join('')}
     </div>
   </div>`;
 }
 
 // ---------- events ----------
+
+function tableOps(op) {
+  const n = store.tableAmount;
+  const self = me();
+  const opps = opponentsInOrder().filter((p) => !isOut(p));
+  const all = seats().filter((p) => !isOut(p));
+  const life = (list, d) => list.map((p) => ({ target: p.id, field: 'life', delta: d }));
+  switch (op) {
+    case 'oppLose': return [`Opponents lose ${n}`, life(opps, -n)];
+    case 'allLose': return [`Everyone loses ${n}`, life(all, -n)];
+    case 'oppGain': return [`Opponents gain ${n}`, life(opps, n)];
+    case 'allGain': return [`Everyone gains ${n}`, life(all, n)];
+    case 'drain': return [`Drain ${n}`, [...life(opps, -n), { target: self.id, field: 'life', delta: n * opps.length }]];
+    case 'oppPoison': return [`Opponents get ${n} poison`, opps.map((p) => ({ target: p.id, field: 'poison', delta: n }))];
+    case 'proliferate': return ['Proliferate', opps.filter((p) => p.poison > 0).map((p) => ({ target: p.id, field: 'poison', delta: 1 }))];
+    default: return [null, []];
+  }
+}
 
 const actions = {
   go: (d) => go(d.to),
@@ -742,7 +823,7 @@ const actions = {
   sheet: (d) => { if (d.kind === 'player' && !d.id) return; openSheet(d.kind, d.id); },
   pickColor: (d, el) => {
     const form = el.closest('form');
-    form.querySelectorAll('.swatch').forEach((s) => s.classList.toggle('on', s === el));
+    form.querySelectorAll('.swatch').forEach((s) => { s.classList.toggle('on', s === el); s.innerHTML = s === el ? icon.check : ''; });
     form.querySelector('[name=color]').value = d.color;
   },
   claim: (d) => {
@@ -768,18 +849,20 @@ const actions = {
   monarch: (d) => send({ type: 'monarch', target: d.id }),
   eliminate: (d) => { store.sheet = null; send({ type: 'eliminate', target: d.id }); },
   revive: (d) => send({ type: 'revive', target: d.id }),
-  undo: () => { store.sheet = null; send({ type: 'undo' }); },
+  undo: () => { store.sheet = null; buzz(15); send({ type: 'undo' }); },
+  amount: (d) => { store.tableAmount = d.set ? Number(d.set) : Math.max(1, Math.min(99, store.tableAmount + Number(d.d))); renderSheet(); },
+  table: (d) => { const [label, ops] = tableOps(d.op); if (label) bulk(label, ops); },
   endGame: (d) => { store.sheet = null; send({ type: 'end', winnerId: d.id || undefined }); },
   backToLobby: () => send({ type: 'backToLobby' }),
   leave: () => {
-    if (!confirm('Leave this session on this phone? You can rejoin your seat later.')) return;
+    if (!confirm('Leave this table on this phone? You can rejoin your seat later.')) return;
     ls.del(`lc.player.${store.code}`);
     ls.del('lc.last');
     disconnect();
     store.code = null;
     go('#/');
   },
-  closeSession: () => { if (confirm('Close the session for everyone? A running game is saved as abandoned.')) { ls.del('lc.last'); send({ type: 'close' }); } },
+  closeSession: () => { if (confirm('Close the table for everyone? A game in progress is saved as abandoned.')) { ls.del('lc.last'); send({ type: 'close' }); } },
 };
 
 document.addEventListener('click', (e) => {

@@ -1,12 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0e1014"/>
-  <g fill="none" stroke-width="22">
-    <circle cx="256" cy="256" r="150" stroke="#2a2f3a"/>
-    <path d="M256 106a150 150 0 0 1 130 75" stroke="#e8c27a"/>
-    <path d="M386 181a150 150 0 0 1 0 150" stroke="#6fb3e8"/>
-    <path d="M386 331a150 150 0 0 1-130 75" stroke="#a98be0"/>
-    <path d="M256 406a150 150 0 0 1-130-75" stroke="#e8706f"/>
-    <path d="M126 331a150 150 0 0 1 0-150" stroke="#6fcf97"/>
-  </g>
-  <text x="256" y="300" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-weight="700" font-size="140" fill="#e9ecf2">40</text>
+  <rect width="512" height="512" rx="112" fill="#0c0d10"/>
+  <rect x="72" y="72" width="176" height="176" rx="32" fill="#1d4f7a"/>
+  <rect x="264" y="72" width="176" height="176" rx="32" fill="#852a2a"/>
+  <rect x="72" y="264" width="176" height="176" rx="32" fill="#1e6141"/>
+  <rect x="264" y="264" width="176" height="176" rx="32" fill="#4b3587"/>
+  <rect x="264" y="264" width="176" height="176" rx="32" fill="none" stroke="#fff" stroke-width="14"/>
 </svg>
