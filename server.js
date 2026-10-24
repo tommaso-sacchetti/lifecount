@@ -32,7 +32,11 @@ const streams = new Map();
 function loadSessions() {
   try {
     const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
-    for (const s of raw) if (s.status !== 'closed') sessions.set(s.code, s);
+    for (const s of raw) {
+      if (s.status === 'closed') continue;
+      if (s.settings.turns === undefined) s.settings.turns = true; // saved before turn tracking became optional
+      sessions.set(s.code, s);
+    }
     console.log(`restored ${sessions.size} session(s)`);
   } catch { /* first run */ }
 }
@@ -65,10 +69,11 @@ function archiveGame(s, reason) {
     endedAt,
     durationMs: endedAt - g.startedAt,
     startingLife: s.settings.startingLife,
+    turnTracking: g.turns.length > 0,
     turns: g.turns,
     winnerId: g.winnerId,
     players: s.players.map((p) => ({
-      id: p.id, name: p.name, commander: p.commander, color: p.color, seat: p.seat,
+      id: p.id, name: p.name, commander: p.commander, card: p.card || null, color: p.color, seat: p.seat,
       finalLife: p.life, poison: p.poison, cmdr: p.cmdr,
       eliminatedAt: p.eliminatedAt || null, place: p.place || null,
     })),
@@ -99,7 +104,7 @@ function createSession() {
     status: 'lobby', // lobby | playing | ended | closed
     hostId: null,
     version: 0,
-    settings: { startingLife: 40 },
+    settings: { startingLife: 40, turns: true },
     players: [],
     game: null,
   };
@@ -131,7 +136,27 @@ function alive(s) {
 class ActionError extends Error {}
 const must = (cond, msg) => { if (!cond) throw new ActionError(msg); };
 
-function join(s, { name, commander, color, playerId }) {
+// Commander card picked from Scryfall. Only keep fields we render, and only Scryfall-hosted URLs.
+function cleanCard(c) {
+  if (!c || typeof c !== 'object') return null;
+  const img = (u) => (typeof u === 'string' && u.startsWith('https://cards.scryfall.io/') ? u : null);
+  const name = String(c.name || '').trim().slice(0, 80);
+  if (!name) return null;
+  return {
+    name,
+    art: img(c.art),
+    image: img(c.image),
+    colors: Array.isArray(c.colors) ? c.colors.filter((x) => 'WUBRG'.includes(x) && x.length === 1).slice(0, 5) : [],
+    uri: typeof c.uri === 'string' && c.uri.startsWith('https://scryfall.com/') ? c.uri : null,
+  };
+}
+
+function parseCard(raw) {
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { return null; } }
+  return cleanCard(raw);
+}
+
+function join(s, { name, commander, card, color, playerId }) {
   if (playerId && player(s, playerId)) return player(s, playerId); // reconnect
   must(s.status === 'lobby', 'Game already started — rejoin as an existing seat');
   must(s.players.length < MAX_PLAYERS, 'Table is full');
@@ -141,10 +166,13 @@ function join(s, { name, commander, color, playerId }) {
   const p = {
     id: crypto.randomUUID(),
     name,
-    commander: String(commander || '').trim().slice(0, 40),
+    commander: String(commander || '').trim().slice(0, 80),
+    card: null,
     color: COLORS.includes(color) && !used.has(color) ? color : COLORS.find((c) => !used.has(c)) || 'amber',
     seat: s.players.length,
   };
+  const c = parseCard(card);
+  if (c && c.name === p.commander) p.card = c;
   resetPlayer(p, s.settings.startingLife);
   s.players.push(p);
   if (!s.hostId) s.hostId = p.id;
@@ -224,7 +252,7 @@ function eliminate(s, p, by) {
   p.place = alive(s).length + 1; // alive() already excludes p
   if (p.monarch) p.monarch = false;
   s.game.log.push({ kind: 'eliminate', t: p.eliminatedAt, by, target: p.id, turn: s.game.turnNumber });
-  if (s.game.activeId === p.id) {
+  if (s.game.activeId && s.game.activeId === p.id) {
     const n = nextAlive(s, p.id);
     if (n) startTurn(s, n.id);
   }
@@ -253,15 +281,22 @@ function act(s, by, a) {
   switch (a.type) {
     case 'settings': {
       must(s.status === 'lobby', 'Settings locked once the game starts');
-      const life = Number(a.startingLife);
-      must([20, 25, 30, 40, 50, 60].includes(life), 'Bad starting life');
-      s.settings.startingLife = life;
-      s.players.forEach((p) => resetPlayer(p, life));
+      if (a.turns !== undefined) s.settings.turns = !!a.turns;
+      if (a.startingLife !== undefined) {
+        const life = Number(a.startingLife);
+        must([20, 25, 30, 40, 50, 60].includes(life), 'Bad starting life');
+        s.settings.startingLife = life;
+        s.players.forEach((p) => resetPlayer(p, life));
+      }
       break;
     }
     case 'profile': {
       if (a.name !== undefined) actor.name = String(a.name).trim().slice(0, 20) || actor.name;
-      if (a.commander !== undefined) actor.commander = String(a.commander).trim().slice(0, 40);
+      if (a.commander !== undefined) {
+        actor.commander = String(a.commander).trim().slice(0, 80);
+        const c = parseCard(a.card);
+        actor.card = c && c.name === actor.commander ? c : null;
+      }
       if (a.color && COLORS.includes(a.color) && !s.players.some((p) => p.color === a.color && p !== actor)) actor.color = a.color;
       break;
     }
@@ -294,9 +329,13 @@ function act(s, by, a) {
       s.game = freshGame(s);
       s.game.startedAt = Date.now();
       s.status = 'playing';
-      const first = a.firstId && player(s, a.firstId) ? a.firstId : s.players[crypto.randomInt(s.players.length)].id;
-      startTurn(s, first);
-      s.game.log.push({ kind: 'start', t: Date.now(), by, target: first, turn: 1 });
+      if (s.settings.turns) {
+        const first = a.firstId && player(s, a.firstId) ? a.firstId : s.players[crypto.randomInt(s.players.length)].id;
+        startTurn(s, first);
+        s.game.log.push({ kind: 'start', t: Date.now(), by, target: first, turn: 1 });
+      } else {
+        s.game.log.push({ kind: 'start', t: Date.now(), by, turn: 0 });
+      }
       break;
     }
     case 'adjust':
@@ -313,12 +352,36 @@ function act(s, by, a) {
     }
     case 'passTurn': {
       must(s.status === 'playing', 'Game is not running');
-      const n = nextAlive(s, s.game.activeId);
-      if (n) startTurn(s, n.id);
+      must(s.settings.turns && s.game.activeId, 'Turn tracking is off');
+      // Guard against two phones ending the same turn at once.
+      if (a.turn !== undefined && Number(a.turn) !== s.game.turnNumber) return;
+      const from = s.game.activeId;
+      const n = nextAlive(s, from);
+      if (n) {
+        startTurn(s, n.id);
+        s.game.log.push({ kind: 'turn', t: Date.now(), by, from, target: n.id, turn: s.game.turnNumber });
+      }
+      break;
+    }
+    case 'turnTracking': {
+      must(s.status === 'playing' || s.status === 'lobby', 'Game is over');
+      s.settings.turns = !!a.on;
+      if (s.status !== 'playing') break;
+      const g = s.game;
+      if (!a.on) {
+        const cur = g.turns[g.turns.length - 1];
+        if (cur && !cur.end) cur.end = Date.now();
+        g.activeId = null;
+        g.turnStartedAt = null;
+      } else if (!g.activeId) {
+        const p = player(s, a.firstId);
+        startTurn(s, p && !p.eliminatedAt ? p.id : alive(s)[0].id);
+      }
       break;
     }
     case 'setActive': {
       must(s.status === 'playing', 'Game is not running');
+      must(s.settings.turns, 'Turn tracking is off');
       const p = player(s, a.target);
       must(p && !p.eliminatedAt, 'Unknown player');
       startTurn(s, p.id);
@@ -441,23 +504,31 @@ function computeStats() {
   const games = readGames().filter((g) => g.reason === 'finished');
   const byName = new Map();
   const byCmdr = new Map();
-  let totalMs = 0, totalTurns = 0;
+  let totalMs = 0, totalTurns = 0, gamesWithTurns = 0, turnMsAll = 0, turnCountAll = 0;
+  let longest = null;
   for (const g of games) {
     totalMs += g.durationMs;
-    totalTurns += g.turns.length;
+    if (g.turns.length) { totalTurns += g.turns.length; gamesWithTurns += 1; }
+    for (const t of g.turns) {
+      if (!t.end) continue;
+      const ms = t.end - t.start;
+      turnMsAll += ms; turnCountAll += 1;
+      if (!longest || ms > longest.ms) longest = { ms, name: g.players.find((p) => p.id === t.playerId)?.name || '?', turn: t.n, gameId: g.id };
+    }
     const dmg = damageDealt(g);
     for (const p of g.players) {
       const key = p.name.trim().toLowerCase();
-      const row = byName.get(key) || { name: p.name, games: 0, wins: 0, damage: 0, kos: 0, turnMs: 0, turnCount: 0, commanders: {} };
+      const row = byName.get(key) || { name: p.name, games: 0, wins: 0, damage: 0, kos: 0, turnMs: 0, turnCount: 0, longestTurnMs: 0, commanders: {} };
       row.games += 1;
       if (g.winnerId === p.id) row.wins += 1;
       row.damage += dmg[p.id] || 0;
-      for (const t of g.turns) if (t.playerId === p.id && t.end) { row.turnMs += t.end - t.start; row.turnCount += 1; }
+      for (const t of g.turns) if (t.playerId === p.id && t.end) { const ms = t.end - t.start; row.turnMs += ms; row.turnCount += 1; row.longestTurnMs = Math.max(row.longestTurnMs, ms); }
       if (p.commander) row.commanders[p.commander] = (row.commanders[p.commander] || 0) + 1;
       byName.set(key, row);
       if (p.commander) {
         const ck = p.commander.trim().toLowerCase();
-        const c = byCmdr.get(ck) || { commander: p.commander, games: 0, wins: 0 };
+        const c = byCmdr.get(ck) || { commander: p.commander, art: null, games: 0, wins: 0 };
+        if (p.card?.art) c.art = p.card.art;
         c.games += 1;
         if (g.winnerId === p.id) c.wins += 1;
         byCmdr.set(ck, c);
@@ -470,19 +541,21 @@ function computeStats() {
   }
   const players = [...byName.values()].map((r) => ({
     name: r.name, games: r.games, wins: r.wins, winRate: r.games ? r.wins / r.games : 0,
-    damage: r.damage, kos: r.kos, avgTurnMs: r.turnCount ? r.turnMs / r.turnCount : 0,
+    damage: r.damage, kos: r.kos, avgTurnMs: r.turnCount ? r.turnMs / r.turnCount : 0, longestTurnMs: r.longestTurnMs, turnsTaken: r.turnCount,
     favorite: Object.entries(r.commanders).sort((a, b) => b[1] - a[1])[0]?.[0] || '',
   })).sort((a, b) => b.wins - a.wins || b.winRate - a.winRate);
   return {
     games: games.length,
     avgDurationMs: games.length ? totalMs / games.length : 0,
-    avgTurns: games.length ? totalTurns / games.length : 0,
+    avgTurns: gamesWithTurns ? totalTurns / gamesWithTurns : 0,
+    avgTurnMs: turnCountAll ? turnMsAll / turnCountAll : 0,
+    longestTurn: longest,
     players,
     commanders: [...byCmdr.values()].sort((a, b) => b.games - a.games),
     recent: games.slice(-20).reverse().map((g) => ({
       id: g.id, endedAt: g.endedAt, durationMs: g.durationMs, turns: g.turns.length,
       winner: g.players.find((p) => p.id === g.winnerId)?.name || null,
-      players: g.players.map((p) => ({ name: p.name, commander: p.commander, color: p.color, place: p.place })),
+      players: g.players.map((p) => ({ name: p.name, commander: p.commander, art: p.card?.art || null, color: p.color, place: p.place })),
     })),
   };
 }
