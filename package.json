@@ -1,0 +1,13 @@
+{
+  "name": "lifecount",
+  "version": "0.1.0",
+  "description": "Synced EDH / Commander life counter for a table of phones",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/smoke.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
