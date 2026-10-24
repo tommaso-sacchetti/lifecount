@@ -154,11 +154,14 @@ function connect(code) {
     }
   };
   store.es = es;
+  // Free hosts sleep after ~15 min without requests; an open stream may not count, so poll gently.
+  store.keepAlive = setInterval(refresh, 5 * 60_000);
 }
 
 function disconnect() {
   store.es?.close();
   store.es = null;
+  clearInterval(store.keepAlive);
 }
 
 async function refresh() {
