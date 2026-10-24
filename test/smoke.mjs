@@ -52,6 +52,13 @@ try {
   let { state } = await act(c, { type: 'undo' }).catch(() => ({})); // c has nothing to undo -> error is fine
   state = (await act(a, { type: 'monarch', target: d })).state;
 
+  // Table action: everyone else loses 1 as a single undoable group.
+  const before = state.players.map((p) => p.life);
+  state = (await act(d, { type: 'bulk', label: 'Opponents lose 1', ops: [a, b, c].map((t) => ({ target: t, field: 'life', delta: -1 })) })).state;
+  assert.deepEqual(state.players.map((p) => p.life), before.map((l, i) => (i === 3 ? l : l - 1)));
+  state = (await act(d, { type: 'undo' })).state;
+  assert.deepEqual(state.players.map((p) => p.life), before, 'undo reverts the whole table action');
+
   assert.equal(state.players.find((p) => p.id === a).life, 35);
   assert.equal(state.players.find((p) => p.id === b).life, 33, 'commander damage subtracts life');
   assert.equal(state.players.find((p) => p.id === b).cmdr[a], 7);

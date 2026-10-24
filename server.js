@@ -89,7 +89,7 @@ function newCode() {
   return code;
 }
 
-const COLORS = ['amber', 'sky', 'violet', 'crimson', 'jade', 'teal', 'orange', 'rose'];
+const COLORS = ['sky', 'crimson', 'jade', 'violet', 'amber', 'teal', 'orange', 'rose'];
 
 function createSession() {
   const s = {
@@ -151,11 +151,12 @@ function join(s, { name, commander, color, playerId }) {
   return p;
 }
 
-function logChange(s, by, target, field, delta, source) {
+function logChange(s, by, target, field, delta, source, group) {
   const g = s.game;
   const now = Date.now();
+  if (group) { g.log.push({ kind: 'adjust', t: now, by, target, field, delta, source, turn: g.turnNumber, group }); return; }
   const last = g.log[g.log.length - 1];
-  if (last && last.kind === 'adjust' && last.by === by && last.target === target && last.field === field &&
+  if (last && !last.group && last.kind === 'adjust' && last.by === by && last.target === target && last.field === field &&
       last.source === source && now - last.t < COALESCE_MS) {
     last.delta += delta;
     last.t = now;
@@ -165,7 +166,7 @@ function logChange(s, by, target, field, delta, source) {
   g.log.push({ kind: 'adjust', t: now, by, target, field, delta, source, turn: g.turnNumber });
 }
 
-function adjust(s, by, { target, field, delta, source }) {
+function adjust(s, by, { target, field, delta, source }, group = null) {
   must(s.status === 'playing', 'Game is not running');
   const p = player(s, target);
   must(p, 'Unknown player');
@@ -176,11 +177,11 @@ function adjust(s, by, { target, field, delta, source }) {
     p.life += delta;
     // Life lost to an opponent's tap is attributed to that opponent unless a source is given.
     const src = source || (by !== target ? by : null);
-    logChange(s, by, target, 'life', delta, src);
+    logChange(s, by, target, 'life', delta, src, group);
   } else if (field === 'poison') {
     const next = Math.max(0, p.poison + delta);
     if (next === p.poison) return;
-    logChange(s, by, target, 'poison', next - p.poison, source || null);
+    logChange(s, by, target, 'poison', next - p.poison, source || null, group);
     p.poison = next;
   } else if (field === 'cmdr') {
     must(player(s, source) && source !== target, 'Commander damage needs a source');
@@ -190,7 +191,7 @@ function adjust(s, by, { target, field, delta, source }) {
     const d = next - cur;
     p.cmdr[source] = next;
     p.life -= d; // commander damage is also life loss
-    logChange(s, by, target, 'cmdr', d, source);
+    logChange(s, by, target, 'cmdr', d, source, group);
   } else {
     throw new ActionError('Unknown field');
   }
@@ -301,6 +302,15 @@ function act(s, by, a) {
     case 'adjust':
       adjust(s, by, a);
       break;
+    case 'bulk': {
+      // Table-wide effects ("each opponent loses 2", drain, proliferate...) as one undoable group.
+      must(Array.isArray(a.ops) && a.ops.length && a.ops.length <= 16, 'Bad bulk action');
+      must(a.ops.every((op) => op.field !== 'cmdr'), 'Commander damage is per player');
+      const group = crypto.randomUUID().slice(0, 8);
+      s.game.log.push({ kind: 'table', t: Date.now(), by, label: String(a.label || 'Table action').slice(0, 60), group, turn: s.game.turnNumber });
+      for (const op of a.ops) adjust(s, by, op, group);
+      break;
+    }
     case 'passTurn': {
       must(s.status === 'playing', 'Game is not running');
       const n = nextAlive(s, s.game.activeId);
@@ -348,14 +358,16 @@ function act(s, by, a) {
       let idx = -1;
       for (let i = log.length - 1; i >= 0; i--) if (log[i].kind === 'adjust' && log[i].by === by) { idx = i; break; }
       must(idx >= 0, 'Nothing to undo');
-      const e = log[idx];
-      const p = player(s, e.target);
-      if (p) {
+      const { group } = log[idx];
+      const doomed = group ? log.filter((e) => e.group === group) : [log[idx]];
+      for (const e of doomed) {
+        const p = player(s, e.target);
+        if (!p || e.kind !== 'adjust') continue;
         if (e.field === 'life') p.life -= e.delta;
         if (e.field === 'poison') p.poison = Math.max(0, p.poison - e.delta);
         if (e.field === 'cmdr') { p.cmdr[e.source] = Math.max(0, (p.cmdr[e.source] || 0) - e.delta); p.life += e.delta; }
       }
-      log.splice(idx, 1);
+      s.game.log = log.filter((e) => !doomed.includes(e));
       break;
     }
     case 'end': {
