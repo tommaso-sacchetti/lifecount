@@ -89,6 +89,25 @@ try {
   const all = await call('GET', '/api/games');
   assert.deepEqual(all.map((g) => g.reason), ['finished', 'abandoned']);
 
+  // A player without a phone: added and edited from someone else's phone, removable by anyone, then claimed.
+  const t2 = await call('POST', '/api/sessions', { name: 'Host' });
+  const guestBody = { type: 'addPlayer', name: 'Paper', commander: 'Krenko' };
+  let s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: t2.playerId, ...guestBody })).state;
+  const joiner = (await call('POST', `/api/sessions/${t2.code}/join`, { name: 'Phone' })).playerId;
+  const guest = s2.players.find((p) => p.name === 'Paper');
+  assert.equal(s2.hostId, t2.playerId, 'adding a player does not change the host');
+  s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'profile', target: guest.id, commander: 'Yuriko' })).state;
+  assert.equal(s2.players.find((p) => p.id === guest.id).commander, 'Yuriko', 'anyone can edit a seat');
+  await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'start', firstId: guest.id });
+  s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'passTurn', turn: 1 })).state;
+  s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: t2.playerId, type: 'passTurn', turn: 1 })).state;
+  assert.equal(s2.game.turnNumber, 2, 'a stale pass (same turn number) is ignored');
+  await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'end' });
+  await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'backToLobby' });
+  s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'kick', target: guest.id })).state;
+  assert.ok(!s2.players.some((p) => p.id === guest.id), 'a seat with no phone can be removed by anyone');
+  await call('POST', `/api/sessions/${t2.code}/action`, { playerId: t2.playerId, type: 'close' });
+
   ctrl.abort();
   await sse;
   console.log(`smoke test passed (${seen.length} SSE updates received)`);

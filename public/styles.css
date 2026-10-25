@@ -351,17 +351,29 @@ table.t .sub { color: var(--text-3); font-size: 13px; }
 
 .has-art { isolation: isolate; }
 .has-art::before {
-  content: ''; position: absolute; left: 0; right: 0; top: 0; height: var(--art-h, 76px); z-index: -1; pointer-events: none;
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: var(--art-h, 62%); z-index: -1; pointer-events: none;
+  /* a light scrim behind the name, then an eased fade into the player colour (many stops so it never bands) */
   background:
-    linear-gradient(180deg, rgba(0,0,0,.5) 0%, rgba(0,0,0,.2) 45%, var(--fill) 100%),
-    var(--art) center 28% / cover no-repeat;
+    linear-gradient(180deg, rgba(0,0,0,.4) 0%, rgba(0,0,0,.12) 22%, rgba(0,0,0,0) 40%),
+    linear-gradient(180deg,
+      transparent 0%,
+      color-mix(in srgb, var(--fill) 6%, transparent) 25%,
+      color-mix(in srgb, var(--fill) 18%, transparent) 40%,
+      color-mix(in srgb, var(--fill) 38%, transparent) 54%,
+      color-mix(in srgb, var(--fill) 62%, transparent) 68%,
+      color-mix(in srgb, var(--fill) 84%, transparent) 82%,
+      color-mix(in srgb, var(--fill) 96%, transparent) 92%,
+      var(--fill) 100%),
+    var(--art) var(--art-pos, center 35%) / cover no-repeat;
 }
 .has-art .opp-name, .has-art .opp-cmdr, .has-art .who, .sheet-head.has-art .t { text-shadow: 0 1px 3px rgba(0,0,0,.7); }
 .has-art .opp-cmdr, .has-art .who span { color: rgba(255,255,255,.88); }
+/* life totals can now overlap the faded art; a soft halo keeps them crisp */
+.has-art .opp-life, .has-art .me-life { text-shadow: 0 2px 14px rgba(0,0,0,.45), 0 0 2px rgba(0,0,0,.3); }
 /* the turn ring has to paint above the art */
 .opp.has-art.active { box-shadow: none; outline: 3px solid #fff; outline-offset: -3px; }
 .me.has-art.active { box-shadow: none; outline: 4px solid #fff; outline-offset: -4px; }
-.me.has-art { --art-h: 112px; }
+.me.has-art { --art-h: 50%; --art-pos: center 30%; }
 .opp.out, .me.out { --fill: var(--surface); }
 .out.has-art::before { filter: grayscale(1); opacity: .45; }
 .sheet-head.has-art { --art-h: 100%; }
@@ -396,3 +408,11 @@ table.t .sub { color: var(--text-3); font-size: 13px; }
 .pip { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
 .pip.W { background: #f4ecd2; } .pip.U { background: #3d85c6; } .pip.B { background: #3b3236; }
 .pip.R { background: #d8452c; } .pip.G { background: #2f8a4e; } .pip.C { background: #b5b2ad; }
+
+/* passing the turn for a player without a phone */
+.pass-for { height: 40px; padding: 0 12px; border-radius: 10px; background: #fff; color: #000; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 6px; flex: none; }
+.pass-for:active { background: #dfe2e7; }
+
+/* passing the turn for a player without a phone */
+.pass-for { height: 40px; padding: 0 12px; border-radius: 10px; background: #fff; color: #000; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 6px; flex: none; }
+.pass-for:active { background: #dfe2e7; }

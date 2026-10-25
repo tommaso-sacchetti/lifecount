@@ -293,13 +293,22 @@ function act(s, by, a) {
       break;
     }
     case 'profile': {
-      if (a.name !== undefined) actor.name = String(a.name).trim().slice(0, 20) || actor.name;
+      // Anyone can edit a seat (phone-less players are edited from someone else's phone).
+      const who = a.target ? player(s, a.target) : actor;
+      must(who, 'Unknown player');
+      if (a.name !== undefined) who.name = String(a.name).trim().slice(0, 20) || who.name;
       if (a.commander !== undefined) {
-        actor.commander = String(a.commander).trim().slice(0, 80);
+        who.commander = String(a.commander).trim().slice(0, 80);
         const c = parseCard(a.card);
-        actor.card = c && c.name === actor.commander ? c : null;
+        who.card = c && c.name === who.commander ? c : null;
       }
-      if (a.color && COLORS.includes(a.color) && !s.players.some((p) => p.color === a.color && p !== actor)) actor.color = a.color;
+      if (a.color && COLORS.includes(a.color) && !s.players.some((p) => p.color === a.color && p !== who)) who.color = a.color;
+      break;
+    }
+    case 'addPlayer': {
+      // A seat for someone without a phone; any phone can claim it later.
+      must(s.status === 'lobby', 'Add players in the lobby');
+      join(s, { name: a.name, commander: a.commander, card: a.card, color: a.color });
       break;
     }
     case 'seats': {
@@ -319,7 +328,8 @@ function act(s, by, a) {
       break;
     }
     case 'kick': {
-      must(s.status === 'lobby' && isHost && a.target !== by, 'Only the host can remove players in the lobby');
+      must(s.status === 'lobby' && a.target !== by, 'Players can only be removed in the lobby');
+      must(isHost || !onlineIds(s).includes(a.target), 'Only the host can remove someone who is connected');
       s.players = s.players.filter((p) => p.id !== a.target);
       s.players.forEach((p, i) => { p.seat = i; });
       break;
@@ -473,8 +483,12 @@ function publicState(s) {
     code: s.code, status: s.status, hostId: s.hostId, version: s.version,
     settings: s.settings, players: s.players, game: s.game, closedReason: s.closedReason,
     idleMinutes: IDLE_MINUTES, lastActivity: s.lastActivity, serverNow: Date.now(),
-    online: [...(streams.get(s.code) || [])].map((r) => r.playerId).filter(Boolean),
+    online: onlineIds(s),
   };
+}
+
+function onlineIds(s) {
+  return [...(streams.get(s.code) || [])].map((r) => r.playerId).filter(Boolean);
 }
 
 function broadcast(s) {

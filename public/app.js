@@ -85,6 +85,7 @@ const icon = {
   up: svg('<path d="m6 15 6-6 6 6"/>'),
   down: svg('<path d="m6 9 6 6 6-6"/>'),
   x: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
   back: svg('<path d="m15 18-6-6 6-6"/>'),
   check: svg('<path d="m5 12 5 5 9-10"/>'),
   dice: svg('<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h.01M15 15h.01M15 9h.01M9 15h.01M12 12h.01"/>'),
@@ -97,6 +98,7 @@ const me = () => S()?.players.find((p) => p.id === store.playerId);
 const byId = (id) => S()?.players.find((p) => p.id === id);
 const seats = () => [...S().players].sort((a, b) => a.seat - b.seat);
 const isOut = (p) => !!p.eliminatedAt;
+const isOnline = (p) => !!p && S().online.includes(p.id);
 const maxCmdr = (p) => Math.max(0, ...Object.values(p.cmdr || {}));
 const lethal = (p) => !isOut(p) && (p.life <= 0 || p.poison >= LETHAL_POISON || maxCmdr(p) >= LETHAL_CMDR);
 
@@ -271,7 +273,19 @@ async function route() {
   render();
 }
 window.addEventListener('hashchange', route);
-const go = (hash) => { location.hash = hash; };
+// In-app navigation marks its history entries, so Back knows whether there's an app page behind it.
+const go = (hash) => {
+  if (location.hash === hash) return;
+  history.pushState({ inApp: true }, '', hash);
+  route();
+};
+// Where Back leads when this page was opened directly (reload, shared link, home-screen start).
+function parentHash() {
+  const r = store.route || {};
+  if (r.name === 'game') return '#/stats';
+  const last = ls.get('lc.last');
+  return last ? `#/s/${last}` : '#/';
+}
 
 // ---------- render ----------
 
@@ -330,7 +344,7 @@ function renderSheet() {
   const sh = store.sheet;
   if (!sh || !S() || S().status === 'closed') { $sheet.innerHTML = ''; return; }
   const body = {
-    player: sheetPlayer, table: sheetTable, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart,
+    player: sheetPlayer, table: sheetTable, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart, addPlayer: sheetAddPlayer,
   }[sh.kind]?.(sh);
   if (!body) { store.sheet = null; $sheet.innerHTML = ''; return; }
   const enter = sh.fresh ? ' enter' : '';
@@ -356,14 +370,14 @@ setInterval(tick, 1000);
 
 // ---------- views: home / join / closed ----------
 
-function profileFields(taken = []) {
-  const p = ls.get('lc.profile', {});
+// `p` is whoever the form is for: this phone's saved profile by default, or a seat being edited.
+function profileFields(taken = [], p = ls.get('lc.profile', {}), namePh = 'Tommaso') {
   const color = p.color && !taken.includes(p.color) ? p.color : COLORS.find((c) => !taken.includes(c));
   const card = parseCard(p.card);
   const picked = card && card.name === p.commander ? card : null;
   return `
     <label class="field"><span class="cap">Your name</span>
-      <input class="input" name="name" maxlength="20" autocomplete="nickname" required value="${esc(p.name || '')}" placeholder="Tommaso"></label>
+      <input class="input" name="name" maxlength="20" autocomplete="nickname" required value="${esc(p.name || '')}" placeholder="${esc(namePh)}"></label>
     <div class="field">
       <label class="cap" for="cmdr-${store.sheet ? 'sheet' : 'page'}">Commander (optional)</label>
       <div class="cmdr-input ${picked ? 'picked' : ''}" style="${artVar(picked?.art)}"><span class="thumb"></span>
@@ -409,21 +423,24 @@ function seatRow(p, i, right = '') {
       <span class="sub">${esc(p.commander || 'No commander set')}</span></div>${right}`;
 }
 
+const claimRow = (p, i) => `<button ${seatArt(p)} data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${isOnline(p) ? 'On a phone' : 'Take seat'}</span>`)}</button>`;
+
 function viewJoin() {
   const s = S();
   if (s.status === 'lobby') {
     return `<div class="page">
       <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Table ${esc(s.code)}</h1>
         <p>${s.players.length} player${s.players.length === 1 ? '' : 's'} · ${s.settings.startingLife} life</p></div></div>
-      <div class="seat-list">${seats().map((p, i) => `<div ${seatArt(p)}>${seatRow(p, i)}</div>`).join('')}</div>
-      <form class="panel section" data-form="join">${profileFields(s.players.map((p) => p.color))}
-        <button class="btn primary block big" type="submit">Take a seat</button></form>
+      ${s.players.length ? `<div class="section"><h2 class="h2">Already at the table?</h2><span class="muted small" style="margin-top:-6px">Tap your seat to use it on this phone</span>
+        <div class="seat-list">${seats().map((p, i) => claimRow(p, i)).join('')}</div></div>` : ''}
+      <form class="panel section" data-form="join"><h2 class="h2">New seat</h2>${profileFields(s.players.map((p) => p.color))}
+        <button class="btn primary block big" type="submit">Take a new seat</button></form>
     </div>`;
   }
   // Mid-game: claim an existing seat (e.g. phone died or switched device).
   return `<div class="page">
     <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Game in progress</h1><p>Tap your seat to rejoin</p></div></div>
-    <div class="seat-list">${seats().map((p, i) => `<button ${seatArt(p)} data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${s.online.includes(p.id) ? 'Online' : 'Rejoin'}</span>`)}</button>`).join('')}</div>
+    <div class="seat-list">${seats().map((p, i) => claimRow(p, i)).join('')}</div>
     <button class="btn ghost block" data-act="go" data-to="#/">Back to home</button>
   </div>`;
 }
@@ -458,11 +475,12 @@ function viewLobby() {
       <div class="section-head"><div><h2 class="h2">Seats</h2><span class="muted small">Sit clockwise in this order</span></div><button class="btn sm" data-act="shuffle">${icon.dice} Shuffle</button></div>
       <div class="seat-list">${list.map((p, i) => `<div ${seatArt(p)}>${seatRow(p, i, `
           <div class="seat-tools">
-            ${p.id === store.playerId ? `<button class="btn sm" data-act="sheet" data-kind="profile">Edit</button>` : p.id === s.hostId ? '<span class="tag" style="align-self:center;margin-right:6px">Host</span>' : ''}
+            ${p.id === store.playerId || !isOnline(p) ? `<button class="btn sm" data-act="sheet" data-kind="profile" data-id="${p.id}">Edit</button>` : p.id === s.hostId ? '<span class="tag" style="align-self:center;margin-right:6px">Host</span>' : ''}
             <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon.up}</button>
             <button class="icon-btn" data-act="seat" data-id="${p.id}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">${icon.down}</button>
-            ${host && p.id !== store.playerId ? `<button class="icon-btn" data-act="kick" data-id="${p.id}" aria-label="Remove">${icon.x}</button>` : ''}
+            ${(host || !isOnline(p)) && p.id !== store.playerId ? `<button class="icon-btn" data-act="kick" data-id="${p.id}" aria-label="Remove">${icon.x}</button>` : ''}
           </div>`)}</div>`).join('')}</div>
+      <button class="btn block" data-act="sheet" data-kind="addPlayer">${icon.plus} Add a player without a phone</button>
     </div>
     <div class="section">
       <h2 class="h2">Starting life</h2>
@@ -548,6 +566,7 @@ function viewGame() {
       <button class="turn-now" data-act="sheet" data-kind="player" data-id="${active?.id || ''}" data-c="${active?.color || 'sky'}">
         <span class="dot"></span><span class="name">${active?.id === self.id ? 'Your turn' : esc(active?.name || '')}</span><span class="clock" data-clock="turn"></span>
       </button>
+      ${active && active.id !== self.id && !isOnline(active) ? `<button class="pass-for" data-act="pass" aria-label="Pass ${esc(active.name)}'s turn">Pass ${icon.next}</button>` : ''}
       <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button>
     </div>
     <div class="opps" style="--cols:${L.cols};--opp-size:${size}vw">${oppHtml}</div>
@@ -607,11 +626,12 @@ function sheetPlayer({ id }) {
 
 function commanderCard(p, self) {
   const img = safeImg(p.card?.image);
-  if (!img && !self) return '';
+  const editable = self || !isOnline(p);
+  if (!img && !editable) return '';
   return `<h4>Commander</h4>
     ${img ? `<a class="card-img" href="${esc(p.card.uri || '#')}" target="_blank" rel="noopener"><img src="${img}" alt="${esc(p.card.name)}" loading="lazy"></a>
       ${p.card.artist ? `<p class="muted small" style="text-align:center;margin:6px 0 0">Art by ${esc(p.card.artist)} · Scryfall</p>` : ''}` : ''}
-    ${self ? `<button class="btn block" style="margin-top:8px" data-act="sheet" data-kind="profile">${p.commander ? 'Change commander' : 'Choose commander'}</button>` : ''}`;
+    ${editable ? `<button class="btn block" style="margin-top:8px" data-act="sheet" data-kind="profile" data-id="${p.id}">${p.commander ? 'Change commander' : 'Choose commander'}</button>` : ''}`;
 }
 
 function sheetTable() {
@@ -716,12 +736,23 @@ function sheetEnd() {
     <button class="btn ghost block" data-act="endGame" data-id="">Draw / no winner</button></div>`;
 }
 
-function sheetProfile() {
-  const p = me();
+function sheetProfile({ id }) {
+  const p = id ? byId(id) : me();
+  if (!p) return null;
+  const self = p.id === store.playerId;
   const taken = S().players.filter((q) => q.id !== p.id).map((q) => q.color);
-  ls.set('lc.profile', { ...ls.get('lc.profile', {}), name: p.name, commander: p.commander, card: p.card ? JSON.stringify(p.card) : '', color: p.color });
-  return `${sheetHead('Your seat')}
-    <form class="section" data-form="profile">${profileFields(taken)}<button class="btn primary block big" type="submit">Save</button></form>`;
+  return `${sheetHead(self ? 'Your seat' : esc(p.name), self ? '' : 'Editing from your phone')}
+    <form class="section" data-form="profile"><input type="hidden" name="target" value="${self ? '' : p.id}">
+      ${profileFields(taken, p)}<button class="btn primary block big" type="submit">Save</button></form>`;
+}
+
+function sheetAddPlayer() {
+  if (S().status !== 'lobby') return null;
+  const taken = S().players.map((q) => q.color);
+  return `${sheetHead('Add a player', 'For someone without a phone')}
+    <form class="section" data-form="addPlayer">${profileFields(taken, {}, 'Their name')}
+      <p class="muted small" style="margin:0">Everyone can update their life. If they get a phone later, they open the link and tap this seat.</p>
+      <button class="btn primary block big" type="submit">Add to the table</button></form>`;
 }
 
 function sheetStart() {
@@ -821,7 +852,7 @@ function viewEnded() {
 function viewGameRecord() {
   const g = store.gameRecord;
   return `<div class="page">
-    <div class="spread"><button class="icon-btn" data-act="go" data-to="#/stats" aria-label="Back">${icon.back}</button><span class="muted">${g ? new Date(g.endedAt).toLocaleString() : 'Loading…'}</span><span style="width:44px"></span></div>
+    <div class="spread"><button class="icon-btn" data-act="back" aria-label="Back">${icon.back}</button><span class="muted">${g ? new Date(g.endedAt).toLocaleString() : 'Loading…'}</span><span style="width:44px"></span></div>
     ${g ? summaryBody(g) : ''}
   </div>`;
 }
@@ -966,7 +997,12 @@ function tableOps(op) {
 
 const actions = {
   go: (d) => go(d.to),
-  back: () => (history.length > 1 ? history.back() : go('#/')),
+  back: () => {
+    if (history.state?.inApp) return history.back();
+    // Nothing of ours behind this page: swap it for its parent instead of stacking a new entry.
+    history.replaceState(null, '', parentHash());
+    route();
+  },
   home: () => go('#/'),
   resume: (d) => go(`#/s/${d.code}`),
   closeSheet: () => { store.sheet = null; renderSheet(); },
@@ -987,6 +1023,8 @@ const actions = {
     f.elements.commander.blur();
   },
   claim: (d) => {
+    const p = byId(d.id);
+    if (isOnline(p) && !confirm(`${p.name} is already on a phone. Use this seat here too?`)) return;
     store.playerId = d.id;
     ls.set(`lc.player.${store.code}`, d.id);
     ls.set('lc.last', store.code);
@@ -1004,7 +1042,8 @@ const actions = {
   kick: (d) => { if (confirm(`Remove ${byId(d.id)?.name}?`)) send({ type: 'kick', target: d.id }); },
   life: (d) => send({ type: 'settings', startingLife: Number(d.n) }),
   start: (d) => { store.sheet = null; send({ type: 'start', firstId: d.id || undefined }); keepAwake(); },
-  pass: () => { buzz(15); send({ type: 'passTurn' }); },
+  // `turn` makes a double tap (or two phones passing at once) end only one turn.
+  pass: () => { buzz(15); send({ type: 'passTurn', turn: S().game.turnNumber }); },
   setActive: (d) => { store.sheet = null; send({ type: 'setActive', target: d.id }); },
   monarch: (d) => send({ type: 'monarch', target: d.id }),
   eliminate: (d) => { store.sheet = null; send({ type: 'eliminate', target: d.id }); },
@@ -1032,6 +1071,11 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  addPlayer(f) {
+    store.sheet = null;
+    document.activeElement?.blur();
+    send({ type: 'addPlayer', ...Object.fromEntries(new FormData(f)) });
+  },
   async create(f) {
     const body = Object.fromEntries(new FormData(f));
     ls.set('lc.profile', body);
@@ -1054,8 +1098,9 @@ const forms = {
     connect(store.code);
   },
   profile(f) {
-    const body = Object.fromEntries(new FormData(f));
-    ls.set('lc.profile', body);
+    const { target, ...body } = Object.fromEntries(new FormData(f));
+    if (!target) ls.set('lc.profile', body);
+    if (target) body.target = target;
     store.sheet = null;
     document.activeElement?.blur();
     send({ type: 'profile', ...body });

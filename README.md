@@ -23,7 +23,8 @@ It prints two URLs: `localhost` for the computer, and a `192.168.x.x` LAN addres
 ### Flow
 
 1. **Create.** The host enters a name, optionally a commander, and picks a color. The commander field searches Scryfall as you type and only suggests cards that are legal as a commander (banned ones are left out), most played first, each with its art and colour identity. A name typed by hand still works, just without art. The app makes a session with a 4-letter code (no I or O) and a QR code.
-2. **Join.** Friends scan the QR, or type the code, and take a seat. Name, commander and color are remembered on each phone for next time.
+2. **Join.** Friends scan the QR, or type the code. The join screen lists the seats already at the table, so you can tap yours to use it on this phone (a seat someone added for you, or your own seat on a new device), or take a new seat. Name, commander and color are remembered on each phone for next time.
+   - **No phone?** Anyone in the lobby can *Add a player without a phone*. That seat works like any other: every phone shows their tile and can change their life, anyone can edit or remove the seat, and when it's their turn every phone gets a **Pass** button in the top bar. If they get a phone later, they open the link and tap their seat.
 3. **Lobby.** The seat list is the table order: reorder it with ↑/↓ or shuffle it, then sit clockwise in that order. Choose starting life (20–60, default 40). Green dots show who is connected.
 4. **Play.** Pick who goes first, or roll for it. Phones stay in sync through the whole game.
 5. **End.** The game ends on its own when one player is left, or anyone can call it from the menu (with a winner or as a draw). A summary screen follows, then **Rematch** (same seats) or **Back to lobby**.
@@ -90,13 +91,13 @@ data/              sessions.json (live sessions), games.jsonl (history) — giti
 test/smoke.mjs     end-to-end API test
 ```
 
-Actions sent to `/action`: `adjust`, `bulk` (table-wide effects as one undoable group), `passTurn`, `setActive`, `monarch`, `eliminate`, `revive`, `undo`, `end`, plus lobby actions (`seats`, `shuffleSeats`, `settings`, `profile`, `kick`, `start`, `backToLobby`, `close`).
+Actions sent to `/action`: `adjust`, `bulk` (table-wide effects as one undoable group), `passTurn`, `setActive`, `monarch`, `eliminate`, `revive`, `undo`, `end`, plus lobby actions (`seats`, `shuffleSeats`, `settings`, `profile` (with an optional `target` to edit another seat), `addPlayer`, `kick`, `start`, `backToLobby`, `close`).
 
 API: `POST /api/sessions` · `GET /api/sessions/:code` · `GET /api/sessions/:code/stream` (SSE) · `POST /api/sessions/:code/join` · `POST /api/sessions/:code/action` · `GET /api/stats` · `GET /api/games[/:id]` · `GET /api/info`
 
 ## Known limits & next steps
 
 - **No accounts.** Stats group players by name (case-insensitive), so "Marco" and "marco" count as the same person but "Marco R." doesn't.
-- **Trust model:** anyone with the code can change anything, which is fine among friends. Only the host can kick players or close the session.
+- **Trust model:** anyone with the code can change anything, which is fine among friends. Only the host can close the session or remove a player who is connected; seats with no phone connected can be removed by anyone.
 - **Wake Lock & install-to-home-screen need HTTPS.** On plain LAN `http://` the screen may dim. Deploying (Render, Fly.io, Railway — one Node process, SSE works fine) or running behind `tailscale serve` / `cloudflared` gives you HTTPS.
 - Ideas: commander tax & storm counters, a day/night toggle, dice/coin and "random player" tools, partner commanders (two commander-damage tracks), a per-pod head-to-head matrix, a PWA offline shell.
