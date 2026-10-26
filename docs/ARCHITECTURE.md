@@ -186,4 +186,4 @@ GET https://api.scryfall.com/cards/search?order=edhrec&q=is:commander legal:comm
 
 - `test/game.test.mjs` (`node --test`) imports `server.js` without starting the HTTP server and calls `act()`, `join()` and `cleanCard()` directly on in-memory sessions. Finished games are archived to a temporary `DATA_DIR`.
 - `test/smoke.mjs` spawns the server on port 3999 with a temporary data directory and plays games over HTTP: seating, adjustments, coalescing, commander damage, poison, turns, monarch, table action and undo, eliminations, automatic end and places; a second client checks SSE; stats, rematch, closing mid-game; phone-less players, duplicate names, duplicate pass protection, removal by a non-host; turn tracking off and switched mid-game.
-- `.github/workflows/test.yml` runs `npm test` on Node 20 and 22 for every push and pull request.
+- `.github/workflows/test.yml` runs `npm test` on Node 22 and 24 for every push and pull request.

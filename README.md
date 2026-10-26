@@ -79,7 +79,7 @@ render.yaml          Render blueprint
 
 ## Testing
 
-`npm test` runs two layers, both on Node's built-in tools (no test framework). GitHub Actions runs them on Node 20 and 22 on every push.
+`npm test` runs two layers, both on Node's built-in tools (no test framework). GitHub Actions runs them on Node 22 and 24 on every push.
 
 - **Unit tests** (`test/game.test.mjs`) call the action reducer directly on a session object: damage attribution, merging rapid taps, commander damage rules, undo of grouped actions, turn order with eliminated players and duplicate passes, places and winner, monarch, turn tracking, unique names, and the Scryfall URL filter.
 - **End-to-end test** (`test/smoke.mjs`) starts the real server with a temporary data directory and plays through the HTTP API: a 4-player game, a second client that must receive the same states over SSE, stats, closing a table mid-game, players without a phone, and turn tracking switched during a game.
