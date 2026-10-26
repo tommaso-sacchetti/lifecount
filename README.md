@@ -1,5 +1,7 @@
 # Lifecount
 
+[![test](https://github.com/tommaso-sacchetti/lifecount/actions/workflows/test.yml/badge.svg)](https://github.com/tommaso-sacchetti/lifecount/actions/workflows/test.yml)
+
 A synced life counter for Commander, the multiplayer Magic: The Gathering format. Each player uses their own phone. Every change to life, poison or commander damage shows up on all phones at the table within a second. It runs in the browser: one person creates a table, the others scan a QR code. No install, no account.
 
 The server is a single Node file with no dependencies; the client is plain JavaScript with no build step.
@@ -46,7 +48,7 @@ Details on state shape, actions, API, persistence and stats: [docs/ARCHITECTURE.
 ```bash
 npm start      # node server.js
 npm run dev    # restart on file changes
-npm test       # end-to-end test
+npm test       # unit tests, then the end-to-end test
 ```
 
 Requires Node 18 or newer, nothing to install. The server prints a `localhost` URL and a LAN URL; phones on the same Wi-Fi open the LAN URL, and the lobby QR code points to it.
@@ -77,7 +79,10 @@ render.yaml          Render blueprint
 
 ## Testing
 
-`npm test` starts the server with a temporary data directory and plays through the API: a 4-player game with every kind of change, undo, table actions, turns and eliminations; a second client that must receive the same states over SSE; stats; closing a table mid-game; players without a phone; duplicate names; and switching turn tracking during a game.
+`npm test` runs two layers, both on Node's built-in tools (no test framework). GitHub Actions runs them on Node 20 and 22 on every push.
+
+- **Unit tests** (`test/game.test.mjs`) call the action reducer directly on a session object: damage attribution, merging rapid taps, commander damage rules, undo of grouped actions, turn order with eliminated players and duplicate passes, places and winner, monarch, turn tracking, unique names, and the Scryfall URL filter.
+- **End-to-end test** (`test/smoke.mjs`) starts the real server with a temporary data directory and plays through the HTTP API: a 4-player game, a second client that must receive the same states over SSE, stats, closing a table mid-game, players without a phone, and turn tracking switched during a game.
 
 ## Limits
 
@@ -85,6 +90,5 @@ render.yaml          Render blueprint
 - **Names are identities.** Stats group players by name, case-insensitive. Two people with the same name in different games are merged; within one table names must be unique.
 - **Trust.** Anyone with the code can change the game. Per-seat tokens would be the next step if that mattered.
 - **Players without a phone** can only be added in the lobby, not mid-game.
-- **Tests** are one end-to-end script. The action reducer (`act()`) only works on a session object, so it could be unit-tested directly without HTTP.
 
 Card names and images come from [Scryfall](https://scryfall.com). Lifecount is not affiliated with Wizards of the Coast.

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -708,9 +708,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-loadSessions();
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  Lifecount running\n  local:  http://localhost:${PORT}`);
-  for (const u of lanUrls()) console.log(`  phones: ${u}`);
-  console.log(`  idle sessions close after ${IDLE_MINUTES} min\n`);
-});
+// Start only when run directly; tests import the game logic without a server.
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  loadSessions();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n  Lifecount running\n  local:  http://localhost:${PORT}`);
+    for (const u of lanUrls()) console.log(`  phones: ${u}`);
+    console.log(`  idle sessions close after ${IDLE_MINUTES} min\n`);
+  });
+}
+
+export { createSession, join, act, cleanCard, computeStats, ActionError };
