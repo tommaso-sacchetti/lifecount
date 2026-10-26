@@ -427,3 +427,5 @@ table.t .sub { color: var(--text-3); font-size: 13px; }
 .help b { color: var(--text); font-weight: 600; }
 .help ol, .help ul { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; color: var(--text-2); }
 .help a { color: var(--text); }
+
+.seg.text button { font-family: var(--ui); font-size: 17px; font-weight: 600; }

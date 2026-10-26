@@ -400,6 +400,7 @@ function act(s, by, a) {
         const p = player(s, a.firstId);
         startTurn(s, p && !p.eliminatedAt ? p.id : alive(s)[0].id);
       }
+      g.log.push({ kind: 'tracking', t: Date.now(), by, on: !!a.on, target: g.activeId, turn: g.turnNumber });
       break;
     }
     case 'setActive': {
@@ -407,7 +408,9 @@ function act(s, by, a) {
       must(s.settings.turns, 'Turn tracking is off');
       const p = player(s, a.target);
       must(p && !p.eliminatedAt, 'Unknown player');
+      const from = s.game.activeId;
       startTurn(s, p.id);
+      s.game.log.push({ kind: 'turn', t: Date.now(), by, from, target: p.id, turn: s.game.turnNumber });
       break;
     }
     case 'monarch': {

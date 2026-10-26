@@ -99,6 +99,11 @@ const byId = (id) => S()?.players.find((p) => p.id === id);
 const seats = () => [...S().players].sort((a, b) => a.seat - b.seat);
 const isOut = (p) => !!p.eliminatedAt;
 const isOnline = (p) => !!p && S().online.includes(p.id);
+const tracking = () => S()?.settings.turns !== false;
+// With turn tracking off there is no first player to pick, so Start skips the sheet.
+const startBtn = (label, cls) => (tracking()
+  ? `<button class="btn ${cls} block big" data-act="sheet" data-kind="start">${label}</button>`
+  : `<button class="btn ${cls} block big" data-act="start" data-id="">${label}</button>`);
 const maxCmdr = (p) => Math.max(0, ...Object.values(p.cmdr || {}));
 const lethal = (p) => !isOut(p) && (p.life <= 0 || p.poison >= LETHAL_POISON || maxCmdr(p) >= LETHAL_CMDR);
 
@@ -346,7 +351,7 @@ function renderSheet() {
   const sh = store.sheet;
   if (!sh || !S() || S().status === 'closed') { $sheet.innerHTML = ''; return; }
   const body = {
-    player: sheetPlayer, table: sheetTable, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart, addPlayer: sheetAddPlayer,
+    player: sheetPlayer, table: sheetTable, menu: sheetMenu, invite: sheetInvite, log: sheetLog, end: sheetEnd, profile: sheetProfile, start: sheetStart, addPlayer: sheetAddPlayer, track: sheetTrack,
   }[sh.kind]?.(sh);
   if (!body) { store.sheet = null; $sheet.innerHTML = ''; return; }
   const enter = sh.fresh ? ' enter' : '';
@@ -496,7 +501,11 @@ function viewLobby() {
       <h2 class="h2">Starting life</h2>
       <div class="seg">${[20, 30, 40, 50, 60].map((n) => `<button class="${s.settings.startingLife === n ? 'on' : ''}" data-act="life" data-n="${n}">${n}</button>`).join('')}</div>
     </div>
-    <button class="btn primary block big" data-act="sheet" data-kind="start">Start game</button>
+    <div class="section">
+      <div><h2 class="h2">Track turns</h2><span class="muted small">Shows whose turn it is, a Pass turn button and a turn timer. Turn times go into the stats.</span></div>
+      <div class="seg text">${[[true, 'On'], [false, 'Off']].map(([v, l]) => `<button class="${tracking() === v ? 'on' : ''}" data-act="turns" data-on="${v}">${l}</button>`).join('')}</div>
+    </div>
+    ${startBtn('Start game', 'primary')}
   </div>`;
 }
 
@@ -572,11 +581,12 @@ function viewGame() {
 
   return `<div class="game">
     <div class="topbar">
-      <span class="turn-no">Turn ${g.turnNumber}</span>
-      <button class="turn-now" data-act="sheet" data-kind="player" data-id="${active?.id || ''}" data-c="${active?.color || 'sky'}">
-        <span class="dot"></span><span class="name">${active?.id === self.id ? 'Your turn' : esc(active?.name || '')}</span><span class="clock" data-clock="turn"></span>
+      ${active ? `<span class="turn-no">Turn ${g.turnNumber}</span>
+      <button class="turn-now" data-act="sheet" data-kind="player" data-id="${active.id}" data-c="${active.color}">
+        <span class="dot"></span><span class="name">${active.id === self.id ? 'Your turn' : esc(active.name)}</span><span class="clock" data-clock="turn"></span>
       </button>
-      ${active && active.id !== self.id && !isOnline(active) ? `<button class="pass-for" data-act="pass" aria-label="Pass ${esc(active.name)}'s turn">Pass ${icon.next}</button>` : ''}
+      ${active.id !== self.id && !isOnline(active) ? `<button class="pass-for" data-act="pass" aria-label="Pass ${esc(active.name)}'s turn">Pass ${icon.next}</button>` : ''}`
+    : `<div class="turn-now"><span class="name">Game time</span><span class="clock" data-clock="game"></span></div>`}
       <button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button>
     </div>
     <div class="opps" style="--cols:${L.cols};--opp-size:${size}vw">${oppHtml}</div>
@@ -624,9 +634,9 @@ function sheetPlayer({ id }) {
       ${others.map((q) => `<div class="counter"><div class="lbl" data-c="${q.color}"><span class="dot"></span><span class="two"><span>${esc(q.name)}</span>${q.commander ? `<small>${esc(q.commander)}</small>` : ''}</span></div>
         ${step('cmdr', -1, q.id)}<div class="val ${(p.cmdr[q.id] || 0) >= LETHAL_CMDR ? 'warn' : ''}">${p.cmdr[q.id] || 0}</div>${step('cmdr', 1, q.id)}</div>`).join('')}` : ''}
     <h4>Table</h4>
-    <div class="grid2">
+    <div class="${tracking() ? 'grid2' : 'section'}">
       <button class="btn" data-act="monarch" data-id="${p.id}">${p.monarch ? 'Not monarch' : 'Monarch'}</button>
-      <button class="btn" data-act="setActive" data-id="${p.id}" ${s.game.activeId === p.id || isOut(p) ? 'disabled' : ''}>Give the turn</button>
+      ${tracking() ? `<button class="btn" data-act="setActive" data-id="${p.id}" ${s.game.activeId === p.id || isOut(p) ? 'disabled' : ''}>Give the turn</button>` : ''}
     </div>
     <div style="margin-top:8px">${isOut(p)
       ? `<button class="btn block" data-act="revive" data-id="${p.id}">Undo elimination</button>`
@@ -684,6 +694,8 @@ function sheetMenu() {
       <button class="btn block" data-act="sheet" data-kind="invite">Show QR code</button>
       ${playing ? `<button class="btn block" data-act="undo">${icon.undo} Undo my last change</button>
         <button class="btn block" data-act="sheet" data-kind="log">${icon.log} Game log</button>
+        ${tracking() ? '<button class="btn block" data-act="tracking" data-on="false">Stop tracking turns</button>'
+          : '<button class="btn block" data-act="sheet" data-kind="track">Track turns</button>'}
         <button class="btn block" data-act="sheet" data-kind="end">End game</button>` : ''}
       <button class="btn block" data-act="go" data-to="#/stats">Stats and past games</button>
       <button class="btn block" data-act="go" data-to="#/help">How it works</button>
@@ -712,7 +724,9 @@ function describe(e, names) {
   if (e.kind === 'eliminate') return { text: `${n(e.target)} is out` };
   if (e.kind === 'revive') return { text: `${n(e.target)} is back in` };
   if (e.kind === 'monarch') return { text: `${n(e.target)} ${e.on ? 'became' : 'is no longer'} the monarch` };
-  if (e.kind === 'start') return { text: `Game started. ${n(e.target)} goes first` };
+  if (e.kind === 'start') return { text: e.target ? `Game started. ${n(e.target)} goes first` : 'Game started' };
+  if (e.kind === 'turn') return { text: `${n(e.target)}'s turn` };
+  if (e.kind === 'tracking') return { text: e.on ? `Turn tracking on. ${n(e.target)}'s turn` : 'Turn tracking off' };
   return { text: e.kind };
 }
 
@@ -728,7 +742,7 @@ function logRows(log, startedAt, names) {
   return out.slice(0, 150).map((e) => {
     const x = describe(e, names);
     const val = x.d === undefined ? '' : `<span class="d ${(x.poison ? -x.d : x.d) < 0 ? 'neg' : 'pos'}">${minus(x.d)}${x.poison ? ' ☣' : ''}</span>`;
-    const t = e.group && e.kind === 'adjust' ? '' : `T${e.turn ?? ''} · ${clock(e.t - startedAt)}`;
+    const t = e.group && e.kind === 'adjust' ? '' : `${e.turn ? `T${e.turn} · ` : ''}${clock(e.t - startedAt)}`;
     return `<div class="log-row ${x.group ? 'group' : ''}"><span class="t">${t}</span><span${e.group && e.kind === 'adjust' ? ' style="padding-left:12px"' : ''}>${x.text}</span>${val}</div>`;
   }).join('');
 }
@@ -764,6 +778,15 @@ function sheetAddPlayer() {
     <form class="section" data-form="addPlayer">${profileFields(taken, {}, 'Their name')}
       <p class="muted small" style="margin:0">Everyone can update their life. If they get a phone later, they open the link and tap this seat.</p>
       <button class="btn primary block big" type="submit">Add to the table</button></form>`;
+}
+
+// Turning tracking on mid-game: the table says whose turn it is right now.
+function sheetTrack() {
+  if (S().status !== 'playing' || tracking()) return null;
+  return `${sheetHead('Track turns', 'Whose turn is it now?')}
+    <div class="section" style="gap:8px">
+      ${seats().filter((p) => !isOut(p)).map((p) => `<button class="btn fill block" data-c="${p.color}" data-act="tracking" data-on="true" data-id="${p.id}">${esc(p.name)}</button>`).join('')}
+    </div>`;
 }
 
 function sheetStart() {
@@ -833,8 +856,8 @@ function summaryBody(g) {
     </div>
     <div class="kpis">
       <div class="kpi"><span class="cap">Length</span><b>${dur(sum.end)}</b></div>
-      <div class="kpi"><span class="cap">Turns</span><b>${g.turns.length}</b></div>
-      <div class="kpi"><span class="cap">Avg turn</span><b>${clock(avgTurn)}</b></div>
+      <div class="kpi"><span class="cap">Turns</span><b>${g.turns.length || '–'}</b></div>
+      <div class="kpi"><span class="cap">Avg turn</span><b>${avgTurn ? clock(avgTurn) : '–'}</b></div>
     </div>
     <div class="panel"><h2 class="h2" style="margin-bottom:10px">Life over time</h2>${lifeChart(g, sum)}</div>
     <div class="panel">
@@ -854,7 +877,7 @@ function viewEnded() {
   return `<div class="page">
     <div class="spread"><b>Table ${esc(s.code)}</b><button class="icon-btn" data-act="sheet" data-kind="menu" aria-label="Menu">${icon.menu}</button></div>
     ${summaryBody(g)}
-    <button class="btn primary block big" data-act="sheet" data-kind="start">Rematch, same seats</button>
+    ${startBtn('Rematch, same seats', 'primary')}
     <button class="btn block" data-act="backToLobby">Back to lobby</button>
     ${host ? '<button class="btn danger block" data-act="closeSession">Close the table</button>' : ''}
   </div>`;
@@ -888,7 +911,7 @@ function viewHelp() {
       <li><b>Tap any player</b> to change poison, commander damage, monarch, or to eliminate them. Commander damage also takes away life.</li>
       <li><b>Table actions</b> change several players at once: everyone loses N, drain, proliferate and so on.</li>
       <li><b>Undo</b> reverses your last change, or a whole table action.</li>
-      <li><b>Pass turn</b> appears on your panel when it is your turn. The player whose turn it is has a white border.</li>
+      <li><b>Pass turn</b> appears on your panel when it is your turn. The player whose turn it is has a white border. Turn tracking can be switched off in the lobby or from the menu.</li>
       <li>A white badge such as <b>−5 Marco</b> shows who just changed a life total.</li></ul>
       <p>At 0 life, 10 poison or 21 commander damage from one commander, the player is marked <b>Lethal</b>. Nobody is removed automatically. Tap the player and choose <b>Eliminate</b>.</p>`)}
     ${sec('Ending', `<p>The game ends by itself when one player is left. You can also end it from the menu and choose the winner. A summary follows, then <b>Rematch</b> or <b>Back to lobby</b>.</p>`)}
@@ -910,7 +933,7 @@ function viewStats() {
     <div class="kpis">
       <div class="kpi"><span class="cap">Games</span><b>${st.games}</b></div>
       <div class="kpi"><span class="cap">Avg length</span><b>${dur(st.avgDurationMs)}</b></div>
-      <div class="kpi"><span class="cap">Avg turns</span><b>${Math.round(st.avgTurns)}</b></div>
+      <div class="kpi"><span class="cap">Avg turns</span><b>${st.avgTurns ? Math.round(st.avgTurns) : '–'}</b></div>
     </div>
     <div class="panel"><h2 class="h2" style="margin-bottom:8px">Players</h2>
       <table class="t"><thead><tr><th>Player</th><th class="r">Wins</th><th class="r">Win %</th><th class="r">Dealt</th><th class="r">KOs</th></tr></thead><tbody>
@@ -923,7 +946,7 @@ function viewStats() {
     <div class="panel"><h2 class="h2">Recent games</h2>
       ${st.recent.map((g) => `<button class="game-row" data-act="go" data-to="#/g/${g.id}">
         <div style="min-width:0"><div style="font-weight:600">${g.winner ? esc(g.winner) + ' won' : 'Draw'}</div><div class="muted small">${g.players.map((p) => esc(p.name)).join(', ')}</div></div>
-        <div style="text-align:right;flex:none"><div>${dur(g.durationMs)} · ${g.turns} turns</div><div class="muted small">${new Date(g.endedAt).toLocaleDateString()}</div></div>
+        <div style="text-align:right;flex:none"><div>${dur(g.durationMs)}${g.turns ? ` · ${g.turns} turns` : ''}</div><div class="muted small">${new Date(g.endedAt).toLocaleDateString()}</div></div>
       </button>`).join('')}
     </div>
   </div>`;
@@ -1085,6 +1108,8 @@ const actions = {
   shuffle: () => send({ type: 'shuffleSeats' }),
   kick: (d) => { if (confirm(`Remove ${byId(d.id)?.name}?`)) send({ type: 'kick', target: d.id }); },
   life: (d) => send({ type: 'settings', startingLife: Number(d.n) }),
+  turns: (d) => send({ type: 'settings', turns: d.on === 'true' }),
+  tracking: (d) => { store.sheet = null; send({ type: 'turnTracking', on: d.on === 'true', firstId: d.id || undefined }); },
   start: (d) => { store.sheet = null; send({ type: 'start', firstId: d.id || undefined }); keepAwake(); },
   // `turn` makes a double tap (or two phones passing at once) end only one turn.
   pass: () => { buzz(15); send({ type: 'passTurn', turn: S().game.turnNumber }); },

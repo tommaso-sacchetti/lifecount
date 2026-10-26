@@ -1,246 +1,90 @@
 # Lifecount
 
-A synced life counter for Commander (EDH). Each player uses their own phone. One server holds the game state and pushes every change to all phones in the table. It runs in the browser, needs no account, and the server has no dependencies.
+A synced life counter for Commander, the multiplayer Magic: The Gathering format. Each player uses their own phone. Every change to life, poison or commander damage shows up on all phones at the table within a second. It runs in the browser: one person creates a table, the others scan a QR code. No install, no account.
 
-The player-facing guide is in the app at `#/help` ("How it works" on the home page, the join screen and the menu).
+The server is a single Node file with no dependencies; the client is plain JavaScript with no build step.
 
-## Contents
+**Live:** [lifecount.onrender.com](https://lifecount.onrender.com) (free hosting: the first visit after a quiet period takes about a minute to wake the server).
 
-- [Run it](#run-it)
-- [Deploy](#deploy)
-- [Stack](#stack)
-- [Architecture](#architecture)
-- [User flow](#user-flow)
-- [Data flow](#data-flow)
-- [Session state](#session-state)
-- [Actions](#actions)
-- [HTTP API](#http-api)
-- [Persistence and lifecycle](#persistence-and-lifecycle)
-- [Stats and attribution](#stats-and-attribution)
-- [Client](#client)
-- [Commander search](#commander-search)
-- [Design language](#design-language)
-- [Testing](#testing)
-- [Limits and next steps](#limits-and-next-steps)
+## Features
 
-## Run it
+- **Your life big, everyone else readable.** Your total fills the bottom of the screen. Opponents are placed at the top as you see them from your seat.
+- **Anyone can change anything.** Tap an opponent's − or +, or open a player for poison, commander damage (which also removes life), monarch and elimination.
+- **Table actions.** Everyone loses N, drain, proliferate and similar effects in one tap, undone in one tap.
+- **Undo and log.** Rapid taps merge into one entry (`Luca −7`). A badge shows who just changed a total.
+- **Turns, optional.** Whose turn it is, a Pass button and a turn timer. Can be switched off in the lobby or mid-game.
+- **Players without a phone.** Added in the lobby and updated from anyone's phone. They can take over their seat with a phone later.
+- **Commander search.** Type a few letters and pick from legal commanders (Scryfall). The card art appears on the player's tile.
+- **Stats.** Wins, damage dealt, KOs, turn times and commanders per player, plus a life chart for each game.
+- **In-app guide** at `#/help`, linked from the screen people land on after scanning the QR code.
+
+## How it works
+
+```
+ phone ──POST action──▶ server ──SSE full state──▶ every phone at the table
+   ▲                     │
+   └─ shows the tap      └─ validates, applies, logs, saves to disk
+      immediately
+```
+
+The server owns the game state. A phone sends an action (`adjust`, `passTurn`, `eliminate`, ...), the server applies it and pushes the complete table state to every phone over Server-Sent Events. The phone that tapped shows the change immediately and reconciles when the server's state arrives.
+
+Details on state shape, actions, API, persistence and stats: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Design decisions
+
+- **Server-authoritative, full-state broadcast.** One place decides what happened, so phones can't disagree. A table's state is a few kilobytes, so sending all of it is simpler than diffs and lets a phone that reconnects catch up with no extra logic.
+- **Server-Sent Events, not WebSockets.** Phones only need to receive pushes; actions go over normal `POST`. SSE is plain HTTP, reconnects on its own in every browser, and needs no library.
+- **Optimistic taps.** A tap updates the screen before the server answers. Server states that arrive while taps are still in flight are held back, so a slow reply can't undo a newer tap.
+- **No dependencies, no build.** It runs anywhere Node 18 runs, including a laptop on a Wi-Fi network with no internet (fonts and the QR library are bundled). There is nothing to update or audit.
+- **No accounts.** Joining takes a code and a name. Anyone at the table can change anything, as they would with dice and paper. The host only has power to close the table or remove a connected player.
+- **Lethal is suggested, not enforced.** At 0 life, 10 poison or 21 commander damage a player is marked *Lethal*, but elimination is manual, because life gain in response is part of the game.
+- **Stats without extra input.** Lowering another player's life from your phone counts as your damage; commander damage has an explicit source. KOs go to the last player who dealt damage. Nobody has to record anything after the game.
+
+## Run locally
 
 ```bash
 npm start      # node server.js
-npm run dev    # restarts on file changes
-npm test       # end-to-end smoke test
+npm run dev    # restart on file changes
+npm test       # end-to-end test
 ```
 
-Requires Node 18 or newer. There is nothing to install. The server prints a `localhost` URL and a LAN URL. Phones on the same Wi-Fi can use the LAN URL; the QR code in the lobby points at it when the table was created from `localhost`.
+Requires Node 18 or newer, nothing to install. The server prints a `localhost` URL and a LAN URL; phones on the same Wi-Fi open the LAN URL, and the lobby QR code points to it.
 
-| env var        | default  | meaning                                          |
-| -------------- | -------- | ------------------------------------------------ |
-| `PORT`         | 3000     | HTTP port                                        |
-| `IDLE_MINUTES` | 180      | a table with no actions for this long closes     |
-| `DATA_DIR`     | `./data` | where live tables and game history are written  |
+| env var        | default  | meaning                                       |
+| -------------- | -------- | --------------------------------------------- |
+| `PORT`         | 3000     | HTTP port                                     |
+| `IDLE_MINUTES` | 180      | a table with no actions for this long closes  |
+| `DATA_DIR`     | `./data` | where open tables and game history are stored |
 
 ## Deploy
 
-`render.yaml` deploys the app as one free web service on [Render](https://render.com). Pushing to `main` redeploys.
+`render.yaml` deploys it as one web service on [Render](https://render.com); pushing to `main` redeploys. On the free plan the service sleeps after 15 minutes without requests (the first request then takes about a minute) and the disk is wiped on restart, which clears open tables and stats. While a table is open, phones poll every 5 minutes so the service stays awake during a game. Any host with a persistent disk keeps the history.
 
-The free plan has two side effects:
+HTTPS is needed for the screen Wake Lock and for adding the app to the home screen.
 
-- The service sleeps after 15 minutes without requests. The first request after that takes about a minute. While a table is open, each phone requests the table state every 5 minutes so the service stays awake during a game.
-- The disk is wiped on every restart or deploy. Open tables and the game history (stats) are lost. Use a host with a persistent disk (Fly.io or Railway with a volume, or any VPS) to keep them.
-
-HTTPS is required for the screen Wake Lock and for installing to the home screen. Render provides it. On a plain `http://` LAN address the screen may dim.
-
-## Stack
-
-| Part        | Choice                                                                         |
-| ----------- | ------------------------------------------------------------------------------ |
-| Server      | Node `http` module, ES modules, no dependencies (`server.js`, ~700 lines)      |
-| Sync        | Server-Sent Events (one stream per phone) + JSON `POST` for actions            |
-| Storage     | JSON file for live tables, JSON Lines file for finished games                  |
-| Client      | One vanilla JS module, no framework and no build step (`public/app.js`)        |
-| Styling     | Plain CSS with custom properties (`public/styles.css`)                         |
-| Vendored    | `qrcode-generator`, Barlow and Barlow Condensed fonts (`public/vendor/`)       |
-| External    | Scryfall API for commander search and card images (optional at runtime)        |
-| Tests       | `node:assert` script that boots the server and plays games over HTTP           |
-
-## Architecture
+## Project layout
 
 ```
-public/index.html        app shell, loads the QR library and app.js
-public/app.js            client: routing, rendering, optimistic updates, SSE, Scryfall search
-public/styles.css        design tokens and components
-public/vendor/           QR generator and fonts (see LICENSES.md)
-server.js                static files, JSON API, SSE, action reducer, idle sweep, stats
-data/sessions.json       live tables (rewritten 500 ms after the last change)
-data/games.jsonl         one finished or abandoned game per line
-test/smoke.mjs           end-to-end test
-render.yaml              Render blueprint
+server.js            HTTP server, action reducer, SSE, persistence, idle sweep, stats
+public/app.js        client: routing, rendering, optimistic updates, commander search
+public/styles.css    design tokens and components
+public/vendor/       QR generator, Barlow fonts
+test/smoke.mjs       starts the server and plays games over HTTP
+docs/ARCHITECTURE.md technical reference
+render.yaml          Render blueprint
 ```
-
-The server is authoritative. Phones never edit state directly: they send an action, the server applies it to the session (`act()` in `server.js`), increments `version`, and broadcasts the full public state to every phone at that table. Sending the whole state instead of diffs keeps the client simple; a table's state is a few kilobytes.
-
-## User flow
-
-1. **Home.** Create a table (name, optional commander, colour) or type a 4-letter code. The code uses letters without I and O.
-2. **Join.** A phone that opens `#/s/CODE` and has no seat sees the seats already at the table and a new-seat form. Tapping a seat uses it on this phone (a seat someone added for you, or your own seat on another device). If that seat is already connected elsewhere, the phone asks first.
-3. **Lobby.** Seat order is table order, clockwise; reorder with ↑/↓ or shuffle. Choose starting life (20 to 60). Anyone can **add a player without a phone**, and edit or remove seats that have no phone connected. Only the host can remove a connected player.
-4. **Play.** Choose who goes first or pick at random. Everyone sees the same state; anyone can change anyone's counters. When a phone-less player has the turn, every phone shows a **Pass** button in the top bar.
-5. **End.** The game ends when one player is left, or from the menu with a chosen winner or a draw. The summary screen offers **Rematch** (same seats) or **Back to lobby**.
-6. **Close.** The host can close the table. Otherwise it closes after `IDLE_MINUTES` without actions. A game still running at that point is saved as *abandoned*.
-
-The game screen shows your life large at the bottom (tap left half −1, right half +1, hold to repeat) and opponents on top, laid out as seen from your seat: left neighbour bottom-left, right neighbour bottom-right, the rest across the top. Tapping a player opens a sheet with life ±1/5/10, poison, commander damage from each opponent, monarch, give the turn, eliminate/undo elimination, and their commander card. At 0 life, 10 poison or 21 commander damage the player is marked *Lethal*; elimination is always manual.
-
-## Data flow
-
-```mermaid
-sequenceDiagram
-  participant A as Phone A
-  participant S as Server
-  participant B as Phone B
-  A->>A: tap −1: apply locally, render
-  A->>S: POST /api/sessions/CODE/action {type: adjust, ...}
-  S->>S: act(): validate, mutate, log, version++
-  S-->>A: 200 {state}
-  S-->>A: SSE data: {state}
-  S-->>B: SSE data: {state}
-  B->>B: adopt(state): render, show "−1 A" badge
-```
-
-- **Optimistic updates.** `adjust()` on the client mirrors the server change locally so a tap shows instantly. While actions are in flight (`store.pending > 0`), incoming states are stashed, not rendered, so a slow echo can't undo a fast tap. When the last request returns, the newest state wins.
-- **Coalescing.** Taps by the same phone on the same counter within 4 seconds merge into one log entry (`Luca −7`, not seven `−1`). Undo then reverts the whole burst.
-- **Grouped changes.** Table actions (`bulk`) log every change with a shared `group` id, so one undo reverts all of them.
-- **Delta badges.** When a new state arrives, the client compares each life total with the previous state and shows a badge with the change and who made it.
-- **Clock skew.** Every state carries `serverNow`; the client uses the offset for turn and game clocks.
-- **Keep-alive.** The server writes an SSE comment every 20 seconds. The client requests the table state every 5 minutes (see Deploy) and when the tab becomes visible again.
-- **Presence.** `online` in the state lists the player ids with an open stream. It drives the green dots, "On a phone" tags, the Pass-for-them button and who may remove a seat.
-
-## Session state
-
-`GET /api/sessions/CODE` and every SSE message return:
-
-```js
-{
-  code: 'ABCD', status: 'lobby' | 'playing' | 'ended' | 'closed',
-  hostId, version, lastActivity, serverNow, idleMinutes, closedReason,
-  settings: { startingLife: 40, turns: true },
-  online: [playerId, ...],
-  players: [{
-    id, name, color, seat, commander,
-    card: { name, art, image, colors, uri, artist } | null,   // Scryfall pick
-    life, poison, cmdr: { [sourcePlayerId]: damage }, monarch,
-    eliminatedAt, place,
-  }],
-  game: {
-    startedAt, endedAt, winnerId, activeId, turnNumber, turnStartedAt,
-    turns: [{ n, playerId, start, end }],
-    log: [{ kind: 'adjust' | 'start' | 'turn' | 'eliminate' | 'revive' | ..., t, by, target, field, delta, source, turn, group }],
-  } | null,
-}
-```
-
-`card` is only stored when its name matches `commander`, and image URLs must be on `cards.scryfall.io` (checked on the server and again in the client, since they end up in CSS `url()`).
-
-## Actions
-
-All go to `POST /api/sessions/CODE/action` as `{ playerId, type, ... }`. `playerId` must be a seat at that table.
-
-| type           | when          | fields                                    | effect                                                        |
-| -------------- | ------------- | ----------------------------------------- | ------------------------------------------------------------- |
-| `settings`     | lobby         | `startingLife`, `turns`                   | starting life; turn tracking on/off                           |
-| `profile`      | any           | `name`, `commander`, `card`, `color`, `target` | edit own seat, or seat `target`                          |
-| `addPlayer`    | lobby         | `name`, `commander`, `card`, `color`      | add a seat with no phone                                      |
-| `seats`        | lobby         | `order` (ids)                             | set table order                                               |
-| `shuffleSeats` | lobby         |                                           | random order                                                  |
-| `kick`         | lobby         | `target`                                  | remove a seat (host, or anyone if that seat is offline)       |
-| `start`        | lobby, ended  | `firstId`                                 | reset counters, start a game                                  |
-| `adjust`       | playing       | `target`, `field` (`life`/`poison`/`cmdr`), `delta`, `source` | one change; `cmdr` needs `source` and also changes life |
-| `bulk`         | playing       | `label`, `ops` (list of adjusts)          | table action, undone as one                                   |
-| `passTurn`     | playing       | `turn`                                    | next living player; ignored if `turn` is not the current turn |
-| `setActive`    | playing       | `target`                                  | give the turn to a player                                     |
-| `turnTracking` | lobby, playing| `on`, `firstId`                           | switch turn tracking during a game (no UI yet)                |
-| `monarch`      | playing       | `target`                                  | toggle monarch (only one at a time)                           |
-| `eliminate`    | playing       | `target`                                  | out, with finishing place; last one standing wins             |
-| `revive`       | playing       | `target`                                  | undo an elimination                                           |
-| `undo`         | playing       |                                           | revert this phone's last change or group                      |
-| `end`          | playing       | `winnerId`                                | finish (no winner = draw)                                     |
-| `backToLobby`  | ended         |                                           | back to the lobby, same seats                                 |
-| `close`        | any           |                                           | host only; archive a running game as abandoned                |
-
-## HTTP API
-
-| method | path                              | returns                                          |
-| ------ | --------------------------------- | ------------------------------------------------ |
-| POST   | `/api/sessions`                   | create a table and the first seat: `{ code, playerId, state }` |
-| GET    | `/api/sessions/:code`             | session state                                    |
-| GET    | `/api/sessions/:code/stream?playerId=` | SSE stream of session states               |
-| POST   | `/api/sessions/:code/join`        | new seat: `{ playerId, state }`                  |
-| POST   | `/api/sessions/:code/action`      | apply an action: `{ state }`                     |
-| GET    | `/api/stats`                      | aggregated stats                                 |
-| GET    | `/api/games`                      | every archived game (download)                   |
-| GET    | `/api/games/:id`                  | one archived game                                |
-| GET    | `/api/info`                       | LAN URLs and idle timeout                        |
-
-Errors are `{ error }` with status 400 (bad action) or 404 (unknown table). Any other path serves `public/`, falling back to `index.html`.
-
-## Persistence and lifecycle
-
-- Live tables live in memory and are written to `sessions.json` 500 ms after the last change. They are loaded on start, so a restart on a persistent disk keeps running games.
-- A game is appended to `games.jsonl` when it ends (`finished`) or when its table closes mid-game (`abandoned`). The record holds players, seats, commanders and cards, final counters, places, all turns and the full log.
-- An idle sweep runs every minute and closes tables with no actions for `IDLE_MINUTES`.
-- Closing a table ends every SSE stream; phones show "Session closed".
-
-## Stats and attribution
-
-`computeStats()` reads `games.jsonl` and only counts `finished` games. Players are grouped by name, case-insensitive.
-
-- Lowering another player's life from your phone counts as damage dealt by you. Commander damage counts for its source. Changes to your own life have no source.
-- A KO goes to whoever last dealt attributed damage to the player before they were eliminated.
-- Per player: games, wins, win rate, damage dealt, KOs, average and longest turn, favourite commander.
-- Per commander: games, wins, win rate, art.
-- Per game (`#/g/ID`): life-over-time chart, standings, damage dealt, KOs.
-
-## Client
-
-- **Routes** (hash based): `#/` home, `#/s/CODE` table (join, lobby, game, summary, closed), `#/stats`, `#/g/ID` past game, `#/help` guide. In-app navigation uses `history.pushState` with `{ inApp: true }`; Back uses browser history only when the previous entry is an app page, otherwise it goes to the parent page.
-- **Rendering.** `render()` rebuilds `#app` from `store` with template strings. Before replacing the HTML it saves the values of any form being filled in and restores them afterwards, so a server update doesn't wipe what someone is typing. Bottom sheets (`#sheet-root`) render the same way and are skipped while an input in them has focus.
-- **Events.** One delegated `click` listener dispatches `data-act` to `actions`; `submit` dispatches `data-form` to `forms`. Elements with `data-hold` repeat on press with acceleration.
-- **Local storage.** `lc.profile` (name, commander, card, colour for the next table), `lc.player.CODE` (this phone's seat at that table), `lc.last` (table to resume).
-- **Device.** Wake Lock during a game where supported, short vibration on taps (Android).
-
-## Commander search
-
-The commander field queries Scryfall directly from the browser:
-
-```
-GET https://api.scryfall.com/cards/search?order=edhrec&q=is:commander legal:commander name:"<word>" ...
-```
-
-`is:commander legal:commander` limits results to cards that can be a commander and are not banned. Results come sorted by EDHREC popularity; names whose words start with the typed text move to the top, and the first 8 are shown. Requests are debounced (220 ms) and the previous one is cancelled. Picking a result stores `{ name, art, image, colors, uri, artist }`. A typed name without a pick is saved as plain text. Without internet the field works as a text box.
-
-## Design language
-
-Built to be read across a table:
-
-- Each player is a solid block of their colour. Colours are dark enough for white text, and each player's colour follows them everywhere (tile, seat number, chart line, log).
-- Life totals use Barlow Condensed with tabular digits, up to about 260 px for your own and 90 px for opponents.
-- Commander art fills the top of each tile and fades into the player's colour; the lower part stays solid so the number stays readable.
-- Poison, commander damage and monarch are labelled pills; a pill turns white with a red number at lethal.
-- White marks whose turn it is; red is only for danger.
-- Fonts and the QR library are bundled, so the app works without internet except for card search and art.
 
 ## Testing
 
-`npm test` starts the server on port 3999 with a temporary data directory and:
+`npm test` starts the server with a temporary data directory and plays through the API: a 4-player game with every kind of change, undo, table actions, turns and eliminations; a second client that must receive the same states over SSE; stats; closing a table mid-game; players without a phone; duplicate names; and switching turn tracking during a game.
 
-- plays a 4-player game: seating, adjustments, coalescing, commander damage, poison, turns, monarch, table action and undo, eliminations, automatic end and places
-- checks that a second client receives the same states over SSE
-- checks stats, rematch, closing mid-game (archived as abandoned)
-- checks phone-less players: adding, editing another seat, duplicate pass protection, removal by a non-host
+## Limits
 
-## Limits and next steps
-
-- **No accounts.** Stats group by name: "Marco" and "marco" are the same player, "Marco R." is not. Two different people with the same name in different games are merged in stats. Within one table names must be unique (case-insensitive), so a game never counts one name twice.
-- **Trust.** Anyone with the code can change anything. Only the host can close the table or remove a connected player.
+- **One process, state in memory.** Enough for groups of friends. To run several instances, table state would move to a shared store (Redis or Postgres) with pub/sub to fan out updates, and the history file to a database.
+- **Names are identities.** Stats group players by name, case-insensitive. Two people with the same name in different games are merged; within one table names must be unique.
+- **Trust.** Anyone with the code can change the game. Per-seat tokens would be the next step if that mattered.
 - **Players without a phone** can only be added in the lobby, not mid-game.
-- **Free hosting** loses history on restart (see Deploy).
-- Ideas: turn-tracking switch in the UI, commander tax and storm counters, partner commanders (two damage tracks), dice and coin, head-to-head stats, offline PWA shell.
+- **Tests** are one end-to-end script. The action reducer (`act()`) only works on a session object, so it could be unit-tested directly without HTTP.
+
+Card names and images come from [Scryfall](https://scryfall.com). Lifecount is not affiliated with Wizards of the Coast.

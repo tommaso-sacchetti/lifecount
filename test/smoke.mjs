@@ -108,6 +108,17 @@ try {
   await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'backToLobby' });
   s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'kick', target: guest.id })).state;
   assert.ok(!s2.players.some((p) => p.id === guest.id), 'a seat with no phone can be removed by anyone');
+  // Turn tracking off: no active player, passing is refused; switching it on mid-game starts with the chosen player.
+  const t2act = (by, body) => call('POST', `/api/sessions/${t2.code}/action`, { playerId: by, ...body });
+  await t2act(t2.playerId, { type: 'settings', turns: false });
+  s2 = (await t2act(t2.playerId, { type: 'start' })).state;
+  assert.equal(s2.game.activeId, null);
+  await assert.rejects(t2act(t2.playerId, { type: 'passTurn' }), (e) => e.status === 400);
+  s2 = (await t2act(t2.playerId, { type: 'turnTracking', on: true, firstId: t2.playerId })).state;
+  assert.equal(s2.game.activeId, t2.playerId, 'tracking on mid-game starts with the chosen player');
+  s2 = (await t2act(t2.playerId, { type: 'turnTracking', on: false })).state;
+  assert.equal(s2.game.activeId, null);
+  assert.ok(s2.game.turns.every((t) => t.end), 'switching off closes the running turn');
   await call('POST', `/api/sessions/${t2.code}/action`, { playerId: t2.playerId, type: 'close' });
 
   ctrl.abort();
