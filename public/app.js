@@ -243,6 +243,7 @@ function parseRoute() {
   const [a, b] = h.split('/');
   if (a === 's' && b) return { name: 'session', code: b.toUpperCase() };
   if (a === 'stats') return { name: 'stats' };
+  if (a === 'help') return { name: 'help' };
   if (a === 'g' && b) return { name: 'game', id: b };
   return { name: 'home' };
 }
@@ -294,6 +295,7 @@ function render() {
   let html = '';
   if (r.name === 'home') html = viewHome();
   else if (r.name === 'stats') html = viewStats();
+  else if (r.name === 'help') html = viewHelp();
   else if (r.name === 'game') html = viewGameRecord();
   else if (r.name === 'session') {
     const s = S();
@@ -398,6 +400,7 @@ function viewHome() {
       <img src="/icon.svg" alt="">
       <div><h1 class="h1">Lifecount</h1><p>Commander life counter, synced across the table</p></div>
     </div>
+    ${intro()}
     ${last ? `<button class="btn block big" data-act="resume" data-code="${esc(last)}">Resume game ${esc(last)}</button>` : ''}
     <form class="panel section" data-form="create">
       <h2 class="h2">New game</h2>
@@ -411,6 +414,7 @@ function viewHome() {
       <p class="or" style="margin:0">Or scan the QR code on the host's phone</p>
     </form>
     <button class="btn ghost block" data-act="go" data-to="#/stats">Stats and past games</button>
+    <button class="btn ghost block" data-act="go" data-to="#/help">How it works</button>
   </div>`;
 }
 
@@ -425,12 +429,18 @@ function seatRow(p, i, right = '') {
 
 const claimRow = (p, i) => `<button ${seatArt(p)} data-act="claim" data-id="${p.id}">${seatRow(p, i, `<span class="tag">${isOnline(p) ? 'On a phone' : 'Take seat'}</span>`)}</button>`;
 
+// Shown where people land from the QR code, so a first-time visitor knows what they opened.
+const intro = () => `<div class="intro">
+  <p>A shared life counter for Commander. Everyone uses their own phone, and every change shows up on all phones. No app to install, no account.</p>
+  <button class="link" data-act="go" data-to="#/help">How it works</button></div>`;
+
 function viewJoin() {
   const s = S();
   if (s.status === 'lobby') {
     return `<div class="page">
       <div class="brand"><img src="/icon.svg" alt=""><div><h1 class="h1">Table ${esc(s.code)}</h1>
         <p>${s.players.length} player${s.players.length === 1 ? '' : 's'} · ${s.settings.startingLife} life</p></div></div>
+      ${intro()}
       ${s.players.length ? `<div class="section"><h2 class="h2">Already at the table?</h2><span class="muted small" style="margin-top:-6px">Tap your seat to use it on this phone</span>
         <div class="seat-list">${seats().map((p, i) => claimRow(p, i)).join('')}</div></div>` : ''}
       <form class="panel section" data-form="join"><h2 class="h2">New seat</h2>${profileFields(s.players.map((p) => p.color))}
@@ -676,6 +686,7 @@ function sheetMenu() {
         <button class="btn block" data-act="sheet" data-kind="log">${icon.log} Game log</button>
         <button class="btn block" data-act="sheet" data-kind="end">End game</button>` : ''}
       <button class="btn block" data-act="go" data-to="#/stats">Stats and past games</button>
+      <button class="btn block" data-act="go" data-to="#/help">How it works</button>
       <button class="btn ghost block" data-act="leave">Leave on this phone</button>
       ${host ? `<button class="btn danger block" data-act="closeSession">Close the table for everyone</button>` : ''}
       <p class="muted small" style="text-align:center;margin:4px 0 0">Auto-closes in ${dur(Math.max(0, idleLeft))} if nobody plays</p>
@@ -854,6 +865,39 @@ function viewGameRecord() {
   return `<div class="page">
     <div class="spread"><button class="icon-btn" data-act="back" aria-label="Back">${icon.back}</button><span class="muted">${g ? new Date(g.endedAt).toLocaleString() : 'Loading…'}</span><span style="width:44px"></span></div>
     ${g ? summaryBody(g) : ''}
+  </div>`;
+}
+
+// ---------- help ----------
+
+function viewHelp() {
+  const sec = (title, body) => `<section class="panel help"><h2 class="h2">${title}</h2>${body}</section>`;
+  return `<div class="page">
+    <div class="spread"><button class="icon-btn" data-act="back" aria-label="Back">${icon.back}</button><h1 class="h1" style="font-size:32px">How it works</h1><span style="width:44px"></span></div>
+    ${sec('What it is', `<p>Lifecount tracks life, poison and commander damage for a game of Commander. Each player keeps their own phone. All phones show the same game, and a change made on one appears on the others within a second.</p>
+      <p>It runs in the browser. Nothing to install, no account.</p>`)}
+    ${sec('Start a table', `<ol>
+      <li>One person taps <b>Create table</b> and enters a name, a commander and a colour.</li>
+      <li>The others scan the QR code or type the 4-letter code.</li>
+      <li>Each person takes a seat. If you were already added, tap your name instead of making a new seat.</li>
+      <li>Put the seats in the order you sit, going clockwise, then tap <b>Start game</b>.</li></ol>
+      <p><b>Someone has no phone?</b> In the lobby, tap <b>Add a player without a phone</b>. Anyone can update their life, and when it is their turn a <b>Pass</b> button appears at the top of every phone.</p>`)}
+    ${sec('During the game', `<ul>
+      <li><b>Your life</b> is the big number at the bottom. Tap the left half for −1 and the right half for +1. Hold to change it faster.</li>
+      <li><b>Opponents</b> are at the top, placed as you see them from your seat. Use their − and + buttons to change their life.</li>
+      <li><b>Tap any player</b> to change poison, commander damage, monarch, or to eliminate them. Commander damage also takes away life.</li>
+      <li><b>Table actions</b> change several players at once: everyone loses N, drain, proliferate and so on.</li>
+      <li><b>Undo</b> reverses your last change, or a whole table action.</li>
+      <li><b>Pass turn</b> appears on your panel when it is your turn. The player whose turn it is has a white border.</li>
+      <li>A white badge such as <b>−5 Marco</b> shows who just changed a life total.</li></ul>
+      <p>At 0 life, 10 poison or 21 commander damage from one commander, the player is marked <b>Lethal</b>. Nobody is removed automatically. Tap the player and choose <b>Eliminate</b>.</p>`)}
+    ${sec('Ending', `<p>The game ends by itself when one player is left. You can also end it from the menu and choose the winner. A summary follows, then <b>Rematch</b> or <b>Back to lobby</b>.</p>`)}
+    ${sec('If something goes wrong', `<ul>
+      <li><b>Phone died or changed phone:</b> open the same link and tap your seat.</li>
+      <li><b>Page takes a minute to load:</b> the server sleeps when unused and is waking up. Wait and it will load.</li>
+      <li><b>Screen turns off:</b> the app asks the phone to keep the screen on during a game. If it still turns off, change your phone's auto-lock setting.</li></ul>`)}
+    ${sec('What is saved', `<p>Names, commanders and every change made during a game are kept on the server to build the <b>Stats</b> page: wins, damage dealt, turn times and commanders played. Stats are grouped by name. There are no accounts and no other personal data.</p>
+      <p>A table closes after ${store.info?.idleMinutes ? Math.round(store.info.idleMinutes / 60) : 3} hours with no activity. Card images and names come from <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.</p>`)}
   </div>`;
 }
 
@@ -1070,11 +1114,17 @@ document.addEventListener('click', (e) => {
   actions[el.dataset.act]?.(el.dataset, el);
 });
 
+// Sheet forms stay open until the server accepts them, so a refused name keeps what was typed.
+async function saveSheet(action) {
+  const { state } = await api('POST', `/api/sessions/${store.code}/action`, { ...action, playerId: store.playerId });
+  store.sheet = null;
+  document.activeElement?.blur();
+  adopt(state);
+}
+
 const forms = {
   addPlayer(f) {
-    store.sheet = null;
-    document.activeElement?.blur();
-    send({ type: 'addPlayer', ...Object.fromEntries(new FormData(f)) });
+    return saveSheet({ type: 'addPlayer', ...Object.fromEntries(new FormData(f)) });
   },
   async create(f) {
     const body = Object.fromEntries(new FormData(f));
@@ -1101,9 +1151,7 @@ const forms = {
     const { target, ...body } = Object.fromEntries(new FormData(f));
     if (!target) ls.set('lc.profile', body);
     if (target) body.target = target;
-    store.sheet = null;
-    document.activeElement?.blur();
-    send({ type: 'profile', ...body });
+    return saveSheet({ type: 'profile', ...body });
   },
 };
 

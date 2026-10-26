@@ -94,6 +94,8 @@ try {
   const guestBody = { type: 'addPlayer', name: 'Paper', commander: 'Krenko' };
   let s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: t2.playerId, ...guestBody })).state;
   const joiner = (await call('POST', `/api/sessions/${t2.code}/join`, { name: 'Phone' })).playerId;
+  await assert.rejects(call('POST', `/api/sessions/${t2.code}/join`, { name: ' paper ' }), (e) => e.status === 400, 'duplicate names are refused');
+  await assert.rejects(call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'profile', name: 'HOST' }), (e) => e.status === 400, 'renaming onto a taken name is refused');
   const guest = s2.players.find((p) => p.name === 'Paper');
   assert.equal(s2.hostId, t2.playerId, 'adding a player does not change the host');
   s2 = (await call('POST', `/api/sessions/${t2.code}/action`, { playerId: joiner, type: 'profile', target: guest.id, commander: 'Yuriko' })).state;

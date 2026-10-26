@@ -158,12 +158,20 @@ function parseCard(raw) {
   return cleanCard(raw);
 }
 
+// Names identify players in the log and in stats, so two seats at one table can't share one.
+function mustBeFreeName(s, name, self = null) {
+  const key = name.trim().toLowerCase();
+  const clash = s.players.find((p) => p !== self && p.name.trim().toLowerCase() === key);
+  must(!clash, `${clash?.name} is already at this table. Use a different name.`);
+}
+
 function join(s, { name, commander, card, color, playerId }) {
   if (playerId && player(s, playerId)) return player(s, playerId); // reconnect
   must(s.status === 'lobby', 'Game already started — rejoin as an existing seat');
   must(s.players.length < MAX_PLAYERS, 'Table is full');
   name = String(name || '').trim().slice(0, 20);
   must(name, 'Name required');
+  mustBeFreeName(s, name);
   const used = new Set(s.players.map((p) => p.color));
   const p = {
     id: crypto.randomUUID(),
@@ -296,7 +304,10 @@ function act(s, by, a) {
       // Anyone can edit a seat (phone-less players are edited from someone else's phone).
       const who = a.target ? player(s, a.target) : actor;
       must(who, 'Unknown player');
-      if (a.name !== undefined) who.name = String(a.name).trim().slice(0, 20) || who.name;
+      if (a.name !== undefined) {
+        const name = String(a.name).trim().slice(0, 20);
+        if (name) { mustBeFreeName(s, name, who); who.name = name; }
+      }
       if (a.commander !== undefined) {
         who.commander = String(a.commander).trim().slice(0, 80);
         const c = parseCard(a.card);

@@ -416,3 +416,14 @@ table.t .sub { color: var(--text-3); font-size: 13px; }
 /* passing the turn for a player without a phone */
 .pass-for { height: 40px; padding: 0 12px; border-radius: 10px; background: #fff; color: #000; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 6px; flex: none; }
 .pass-for:active { background: #dfe2e7; }
+
+/* ---------- intro & help ---------- */
+
+.intro { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.intro p { margin: 0; color: var(--text-2); font-size: 16px; }
+.link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; font-size: 16px; }
+.help { display: flex; flex-direction: column; gap: 10px; }
+.help p { margin: 0; color: var(--text-2); }
+.help b { color: var(--text); font-weight: 600; }
+.help ol, .help ul { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; color: var(--text-2); }
+.help a { color: var(--text); }
